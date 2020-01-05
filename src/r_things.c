@@ -459,7 +459,7 @@ void R_AddSpriteDefs(UINT16 wadnum)
 
 		if (R_AddSingleSpriteDef(spritename, &sprites[i], wadnum, start, end))
 		{
-			R_AddSpriteModel(i);
+			Model_AddSprite(i);
 			// if a new sprite was added (not just replaced)
 			addsprites++;
 #ifndef ZDEBUG
@@ -3315,7 +3315,7 @@ next_token:
 		skin_cons_t[numskins].strvalue = skin->name;
 #endif
 
-		R_AddPlayerModel(numskins);
+		Model_AddSkin(numskins);
 
 		numskins++;
 	}
@@ -3441,7 +3441,7 @@ next_token:
 		if (!skin->availability) // Safe to print...
 			CONS_Printf(M_GetText("Patched skin '%s'\n"), skin->name);
 
-		R_AddPlayerModel(skinnum);
+		Model_AddSkin(skinnum);
 	}
 	return;
 }
