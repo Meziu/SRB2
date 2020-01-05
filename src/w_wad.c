@@ -817,9 +817,6 @@ void W_InitFileCache(wadfile_t *wadfile, UINT16 numlumps)
 	// Init patch cache
 	wadfile->patchcache = Z_Calloc(sizeof(patchcache_t), PU_STATIC, NULL);
 	Z_Calloc(size, PU_STATIC, &wadfile->patchcache->lumps);
-#ifdef POLYRENDERER
-	Z_Calloc(size, PU_SOFTPOLY, &wadfile->patchcache->software);
-#endif
 #ifdef HWRENDER
 	Z_Calloc(size, PU_STATIC, &wadfile->patchcache->hardware);
 #endif

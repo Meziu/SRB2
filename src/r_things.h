@@ -42,11 +42,6 @@ extern INT16 screenheightarray[MAXVIDWIDTH];
 // vars for R_DrawMaskedColumn
 extern INT16 *mfloorclip;
 extern INT16 *mceilingclip;
-#ifdef POLYRENDERER
-extern INT16 *rsp_mfloorclip;
-extern INT16 *rsp_mceilingclip;
-extern INT32 rsp_portalclip[2];
-#endif
 extern fixed_t spryscale;
 extern fixed_t sprtopscreen;
 extern fixed_t sprbotscreen;
@@ -75,7 +70,6 @@ typedef struct
 	size_t drawsegs[2];
 	size_t vissprites[2];
 	fixed_t viewx, viewy, viewz;			/**< View z stored at the time of the BSP traversal for the view/portal. Masked sorting/drawing needs it. */
-	angle_t viewangle, aimingangle;
 	sector_t* viewsector;
 } maskcount_t;
 
@@ -177,14 +171,8 @@ typedef struct vissprite_s
 	struct vissprite_s *linkdraw;
 
 	mobj_t *mobj; // for easy access
-	spritenum_t spritenum;
-	void *skin;
-	boolean model;
-	boolean dontdrawsprite;
 
 	INT32 x1, x2;
-	INT32 projx1, projx2;
-	INT32 clipleft, clipright;
 
 	fixed_t gx, gy; // for line side calculation
 	fixed_t gz, gzt; // global bottom/top for silhouette clipping
@@ -221,12 +209,6 @@ typedef struct vissprite_s
 	INT16 clipbot[MAXVIDWIDTH], cliptop[MAXVIDWIDTH];
 
 	INT32 dispoffset; // copy of info->dispoffset, affects ordering but not drawing
-
-#ifdef POLYRENDERER
-	fixed_t viewx, viewy, viewz;
-	angle_t viewangle, aimingangle;
-	fixed_t viewcos, viewsin;
-#endif
 } vissprite_t;
 
 // A drawnode is something that points to a 3D floor, 3D side, or masked

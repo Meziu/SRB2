@@ -23,15 +23,6 @@ extern consvar_t cv_modelinterpolation;
 extern consvar_t cv_modelsfile;
 extern consvar_t cv_modelsfolder;
 
-#ifdef POLYRENDERER
-extern consvar_t cv_texturemapping;
-enum
-{
-	TEXMAP_FIXED = 1,
-	TEXMAP_FLOAT,
-};
-#endif
-
 #define USE_MODEL_NEXTFRAME
 #define MODEL_INTERPOLATION_FLAG "+i"
 
@@ -132,10 +123,6 @@ typedef struct
 #ifdef HWRENDER
 	void               *grpatch;
 	void               *blendgrpatch;
-#endif
-#ifdef POLYRENDERER
-	rsp_texture_t      rsp_tex;
-	rsp_texture_t      rsp_blendtex[8][MAXTRANSLATIONS];
 #endif
 } modeltexture_t;
 

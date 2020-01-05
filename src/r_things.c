@@ -36,10 +36,6 @@
 #include "m_cond.h"
 #include "fastcmp.h"
 
-#ifdef POLYRENDERER
-#include "polyrenderer/r_softpoly.h"
-#endif
-
 #ifdef HWRENDER
 #include "hardware/hw_md2.h"
 #include "hardware/hw_glob.h"
@@ -115,45 +111,6 @@ static void R_InstallSpriteLump(UINT16 wad,            // graphics patch
 
 	if (maxframe ==(size_t)-1 || frame > maxframe)
 		maxframe = frame;
-
-#ifdef POLYRENDERER
-	{
-		lumpcache_t *lumpcache;
-		UINT8 rot;
-		patch_t *patch;
-		rsp_spritetexture_t *tex;
-
-		if (rotation == ROT_L || rotation == ROT_R)
-			rot = ((rotation == ROT_R) ? 4 : 0);
-		else
-			rot = (rotation != 0) ? (rotation-1) : 0;
-
-		if (wadfiles[wad]->patchcache)
-		{
-			lumpcache = wadfiles[wad]->patchcache->software;
-			if (!lumpcache[lump])
-				Z_Malloc(sizeof(rsp_spritetexture_t) * 8, PU_SOFTPOLY, &lumpcache[lump]);
-			tex = lumpcache[lump];
-			tex += rot;
-
-			if (R_CheckIfPatch(lumppat))
-			{
-				patch = (patch_t *)W_CacheLumpNumPwad(wad, lump, PU_STATIC);
-				tex->width = SHORT(patch->width);
-				tex->height = SHORT(patch->height);
-				tex->lumpnum = lumppat;
-				tex->data = NULL;
-				Z_Free(patch);
-			}
-			else
-			{
-				// not even a patch
-				tex->width = -1;
-				tex->height = -1;
-			}
-		}
-	}
-#endif
 
 	// rotsprite
 #ifdef ROTSPRITE
@@ -628,11 +585,6 @@ static vissprite_t *R_NewVisSprite(void)
 //
 INT16 *mfloorclip;
 INT16 *mceilingclip;
-#ifdef POLYRENDERER
-INT16 *rsp_mfloorclip;
-INT16 *rsp_mceilingclip;
-INT32 rsp_portalclip[2];
-#endif
 
 fixed_t spryscale = 0, sprtopscreen = 0, sprbotscreen = 0;
 fixed_t windowtop = 0, windowbottom = 0;
@@ -1124,18 +1076,7 @@ static void R_ProjectSprite(mobj_t *thing)
 	fixed_t tx, tz;
 	fixed_t xscale, yscale, sortscale; //added : 02-02-98 : aaargll..if I were a math-guy!!!
 
-	boolean model;
-	skin_t *skin;
-#ifdef POLYRENDERER
-	modelinfo_t *md2;
-#endif
-
 	INT32 x1, x2;
-	INT32 projx1, projx2;
-	boolean checkvisible = true; // Models turn this off.
-	boolean checkzvisible = true; // Models turn this off, with DONOTCULL.
-	boolean checksides = true; // Same as the last one.
-	boolean dontdrawsprite = false;
 
 	spritedef_t *sprdef;
 	spriteframe_t *sprframe;
@@ -1181,23 +1122,6 @@ static void R_ProjectSprite(mobj_t *thing)
 	fixed_t ang_scale = FRACUNIT;
 #endif
 
-	model = false;
-	skin = thing->skin;
-
-#ifdef POLYRENDERER
-	// Lactozilla: Polygon renderer
-	md2 = Model_IsAvailable(thing->sprite, skin);
-	model = (polyrenderer && cv_models.value && md2);
-	frustumclipping = false; // DONOTCULL turns this on.
-
-	if (model)
-	{
-		checkvisible = false;
-		// MODELDEF stuff should be in here,
-		// but I didn't port it yet.
-	}
-#endif
-
 	// transform the origin point
 	tr_x = thing->x - viewx;
 	tr_y = thing->y - viewy;
@@ -1209,13 +1133,7 @@ static void R_ProjectSprite(mobj_t *thing)
 
 	// thing is behind view plane?
 	if (!(papersprite) && (tz < FixedMul(MINZ, this_scale)))
-	{
-		dontdrawsprite = true;
-		if (checkzvisible)
-			return;
-		else
-			tz = FixedMul(MINZ, this_scale);
-	}
+		return;
 
 	gxt = -FixedMul(tr_x, viewsin);
 	gyt = FixedMul(tr_y, viewcos);
@@ -1223,11 +1141,7 @@ static void R_ProjectSprite(mobj_t *thing)
 
 	// too far off the side?
 	if (abs(tx) > tz<<2)
-	{
-		dontdrawsprite = true;
-		if (checksides)
-			return;
-	}
+		return;
 
 	// aspect ratio stuff
 	xscale = FixedDiv(projection, tz);
@@ -1363,11 +1277,7 @@ static void R_ProjectSprite(mobj_t *thing)
 
 	// off the right side?
 	if (x1 > viewwidth)
-	{
-		dontdrawsprite = true;
-		if (checkvisible)
-			return;
-	}
+		return;
 #endif
 	offset2 = FixedMul(spr_width, this_scale);
 #ifndef PROPERPAPER
@@ -1376,11 +1286,7 @@ static void R_ProjectSprite(mobj_t *thing)
 
 	// off the left side
 	if (x2 < 0)
-	{
-		dontdrawsprite = true;
-		if (checkvisible)
-			return;
-	}
+		return;
 #endif
 
 	if (papersprite)
@@ -1407,13 +1313,8 @@ static void R_ProjectSprite(mobj_t *thing)
 		gyt = -FixedMul(tr_y, viewsin);
 		tz = gxt-gyt;
 		yscale = FixedDiv(projectiony, tz);
-		if (yscale < 64)
-		{
-			dontdrawsprite = true;
-			// Fix some funky visuals
-			if (checkvisible)
-				return;
-		}
+		if (yscale < 64) // Fix some funky visuals
+			return;
 
 #ifdef PROPERPAPER
 		gxt = -FixedMul(tr_x, viewsin);
@@ -1424,11 +1325,7 @@ static void R_ProjectSprite(mobj_t *thing)
 
 		// off the right side?
 		if (x1 > viewwidth)
-		{
-			dontdrawsprite = true;
-			if (checkvisible)
-				return;
-		}
+			return;
 #endif
 
 		tr_x += FixedMul(offset2, cosmul);
@@ -1437,13 +1334,8 @@ static void R_ProjectSprite(mobj_t *thing)
 		gyt = -FixedMul(tr_y, viewsin);
 		tz2 = gxt-gyt;
 		yscale2 = FixedDiv(projectiony, tz2);
-		if (yscale2 < 64)
-		{
-			dontdrawsprite = true;
-			// ditto
-			if (checkvisible)
-				return;
-		}
+		if (yscale2 < 64) // ditto
+			return;
 
 #ifdef PROPERPAPER
 		gxt = -FixedMul(tr_x, viewsin);
@@ -1454,30 +1346,14 @@ static void R_ProjectSprite(mobj_t *thing)
 
 		// off the left side
 		if (x2 < 0)
-		{
-			dontdrawsprite = true;
-			if (checkvisible)
-				return;
-		}
+			return;
 #endif
 
 		if (max(tz, tz2) < FixedMul(MINZ, this_scale)) // non-papersprite clipping is handled earlier
-		{
-			dontdrawsprite = true;
-			if (checkzvisible)
-				return;
-			else
-				tz2 = FixedMul(MINZ, this_scale);
-		}
+			return;
 
 		if ((range = x2 - x1) <= 0)
-		{
-			dontdrawsprite = true;
-			if (checkvisible)
-				return;
-			else
-				range = 1;
-		}
+			return;
 
 #ifdef PROPERPAPER
 		range++; // fencepost problem
@@ -1506,36 +1382,16 @@ static void R_ProjectSprite(mobj_t *thing)
 
 		// off the right side?
 		if (x1 > viewwidth)
-		{
-			dontdrawsprite = true;
-			if (checkvisible)
-				return;
-		}
+			return;
 
 		tx += offset2;
 		x2 = ((centerxfrac + FixedMul(tx,xscale))>>FRACBITS); x2--;
 
 		// off the left side
 		if (x2 < 0)
-		{
-			dontdrawsprite = true;
-			if (checkvisible)
-				return;
-		}
+			return;
 #endif
 	}
-
-	projx1 = x1;
-	projx2 = x2;
-
-#ifdef POLYRENDERER
-	// Lactozilla: Just project a big ass sprite
-	if (model)
-	{
-		x1 = 0;
-		x2 = viewwidth;
-	}
-#endif
 
 	if ((thing->flags2 & MF2_LINKDRAW) && thing->tracer) // toast 16/09/16 (SYMMETRY)
 	{
@@ -1555,13 +1411,7 @@ static void R_ProjectSprite(mobj_t *thing)
 
 		// thing is behind view plane?
 		if (tz < FixedMul(MINZ, this_scale))
-		{
-			dontdrawsprite = true;
-			if (checkzvisible)
-				return;
-			else
-				tz = FixedMul(MINZ, this_scale);
-		}
+			return;
 
 		if (sortscale < linkscale)
 			dispoffset *= -1; // if it's physically behind, make sure it's ordered behind (if dispoffset > 0)
@@ -1665,27 +1515,8 @@ static void R_ProjectSprite(mobj_t *thing)
 
 	vis->mobj = thing; // Easy access! Tails 06-07-2002
 
-	// Lactozilla: Polygon renderer
-	vis->spritenum = thing->sprite;
-	vis->skin = skin;
-	vis->model = model;
-
-#ifdef POLYRENDERER
-	if (model)
-		modelinview = true;
-#endif
-
-	// Obviously if the renderer decided to not draw the model
-	// you're gonna have to figure out if the sprite should HAVE
-	// been discarded before...
-	vis->dontdrawsprite = dontdrawsprite;
-
 	vis->x1 = x1 < 0 ? 0 : x1;
 	vis->x2 = x2 >= viewwidth ? viewwidth-1 : x2;
-	vis->projx1 = projx1 < 0 ? 0 : projx1;
-	vis->projx2 = projx2 >= viewwidth ? viewwidth-1 : projx2;
-	vis->clipleft = 0;
-	vis->clipright = viewwidth-1;
 
 	// PORTAL SEMI-CLIPPING
 	if (portalrender)
@@ -1694,12 +1525,6 @@ static void R_ProjectSprite(mobj_t *thing)
 			vis->x1 = portalclipstart;
 		if (vis->x2 >= portalclipend)
 			vis->x2 = portalclipend-1;
-		if (vis->projx1 < portalclipstart)
-			vis->projx1 = portalclipstart;
-		if (vis->projx2 >= portalclipend)
-			vis->projx2 = portalclipend-1;
-		vis->clipleft = portalclipstart;
-		vis->clipright = portalclipend-1;
 	}
 
 	vis->xscale = xscale; //SoM: 4/17/2000
@@ -1725,10 +1550,10 @@ static void R_ProjectSprite(mobj_t *thing)
 		vis->xiscale = iscale;
 	}
 
-	if (vis->projx1 > projx1)
+	if (vis->x1 > x1)
 	{
-		vis->startfrac += FixedDiv(vis->xiscale, this_scale)*(vis->projx1-projx1);
-		vis->scale += scalestep*(vis->projx1 - projx1);
+		vis->startfrac += FixedDiv(vis->xiscale, this_scale)*(vis->x1-x1);
+		vis->scale += scalestep*(vis->x1 - x1);
 	}
 
 	//Fab: lumppat is the lump number of the patch to use, this is different
@@ -1778,11 +1603,6 @@ static void R_ProjectSprite(mobj_t *thing)
 
 	if (thing->subsector->sector->numlights)
 		R_SplitSprite(vis);
-
-#ifdef POLYRENDERER
-	if (rsp_maskdraw & RSP_MASKDRAWBIT)
-		RSP_StoreSpriteViewpoint(vis);
-#endif
 
 	// Debug
 	++objectsdrawn;
@@ -1906,14 +1726,9 @@ static void R_ProjectPrecipitationSprite(precipmobj_t *thing)
 	vis->pzt = vis->pz + vis->thingheight;
 	vis->texturemid = vis->gzt - viewz;
 	vis->scalestep = 0;
-	vis->model = false;
-	vis->dontdrawsprite = false;
-	vis->skin = NULL;
 
 	vis->x1 = x1 < 0 ? 0 : x1;
 	vis->x2 = x2 >= viewwidth ? viewwidth-1 : x2;
-	vis->clipleft = 0;
-	vis->clipright = viewwidth-1;
 
 	// PORTAL SEMI-CLIPPING
 	if (portalrender)
@@ -1922,12 +1737,7 @@ static void R_ProjectPrecipitationSprite(precipmobj_t *thing)
 			vis->x1 = portalclipstart;
 		if (vis->x2 >= portalclipend)
 			vis->x2 = portalclipend-1;
-		vis->clipleft = portalclipstart;
-		vis->clipright = portalclipend-1;
 	}
-
-	vis->projx1 = vis->x1;
-	vis->projx2 = vis->x2;
 
 	vis->xscale = xscale; //SoM: 4/17/2000
 	vis->sector = thing->subsector->sector;
@@ -2323,20 +2133,17 @@ static void R_CreateDrawNodes(maskcount_t* mask, drawnode_t* head, boolean temps
 
 	for (rover = vsprsortedhead.prev; rover != &vsprsortedhead; rover = rover->prev)
 	{
-		if (!rover->model)
-		{
-			if (rover->szt > vid.height || rover->sz < 0)
-				continue;
-		}
+		if (rover->szt > vid.height || rover->sz < 0)
+			continue;
 
-		sintersect = (rover->projx1 + rover->projx2) / 2;
+		sintersect = (rover->x1 + rover->x2) / 2;
 
 		for (r2 = head->next; r2 != head; r2 = r2->next)
 		{
 			if (r2->plane)
 			{
 				fixed_t planeobjectz, planecameraz;
-				if (r2->plane->minx > rover->projx2 || r2->plane->maxx < rover->projx1)
+				if (r2->plane->minx > rover->x2 || r2->plane->maxx < rover->x1)
 					continue;
 				if (rover->szt > r2->plane->low || rover->sz < r2->plane->high)
 					continue;
@@ -2370,18 +2177,10 @@ static void R_CreateDrawNodes(maskcount_t* mask, drawnode_t* head, boolean temps
 				// bound to any single linedef, a simple poll of it's frontscale is
 				// not adequate. We must check the entire frontscale array for any
 				// part that is in front of the sprite.
-				if (rover->model)
-				{
-					x1 = r2->plane->minx;
-					x2 = r2->plane->maxx;
-				}
-				else
-				{
-					x1 = rover->x1;
-					x2 = rover->x2;
-					if (x1 < r2->plane->minx) x1 = r2->plane->minx;
-					if (x2 > r2->plane->maxx) x2 = r2->plane->maxx;
-				}
+				x1 = rover->x1;
+				x2 = rover->x2;
+				if (x1 < r2->plane->minx) x1 = r2->plane->minx;
+				if (x2 > r2->plane->maxx) x2 = r2->plane->maxx;
 
 				if (r2->seg) // if no seg set, assume the whole thing is in front or something stupid
 				{
@@ -2403,7 +2202,7 @@ static void R_CreateDrawNodes(maskcount_t* mask, drawnode_t* head, boolean temps
 			else if (r2->thickseg)
 			{
 				fixed_t topplaneobjectz, topplanecameraz, botplaneobjectz, botplanecameraz;
-				if (rover->projx1 > r2->thickseg->x2 || rover->projx2 < r2->thickseg->x1)
+				if (rover->x1 > r2->thickseg->x2 || rover->x2 < r2->thickseg->x1)
 					continue;
 
 				scale = r2->thickseg->scale1 > r2->thickseg->scale2 ? r2->thickseg->scale1 : r2->thickseg->scale2;
@@ -2442,7 +2241,7 @@ static void R_CreateDrawNodes(maskcount_t* mask, drawnode_t* head, boolean temps
 			}
 			else if (r2->seg)
 			{
-				if (rover->projx1 > r2->seg->x2 || rover->projx2 < r2->seg->x1)
+				if (rover->x1 > r2->seg->x2 || rover->x2 < r2->seg->x1)
 					continue;
 
 				scale = r2->seg->scale1 > r2->seg->scale2 ? r2->seg->scale1 : r2->seg->scale2;
@@ -2461,7 +2260,7 @@ static void R_CreateDrawNodes(maskcount_t* mask, drawnode_t* head, boolean temps
 			}
 			else if (r2->sprite)
 			{
-				if (r2->sprite->projx1 > rover->projx2 || r2->sprite->projx2 < rover->projx1)
+				if (r2->sprite->x1 > rover->x2 || r2->sprite->x2 < rover->x1)
 					continue;
 				if (r2->sprite->szt > rover->sz || r2->sprite->sz < rover->szt)
 					continue;
@@ -2547,40 +2346,9 @@ void R_InitDrawNodes(void)
 //
 static void R_DrawSprite(vissprite_t *spr)
 {
-#ifndef POLYRENDERER
 	mfloorclip = spr->clipbot;
 	mceilingclip = spr->cliptop;
 	R_DrawVisSprite(spr);
-#else
-	rsp_mfloorclip = spr->clipbot;
-	rsp_mceilingclip = spr->cliptop;
-	rsp_portalclip[0] = spr->clipleft;
-	rsp_portalclip[1] = spr->clipright;
-
-	if (!spr->model)
-	{
-		mfloorclip = spr->clipbot;
-		mceilingclip = spr->cliptop;
-		R_DrawVisSprite(spr);
-	}
-	else if (!RSP_RenderModel(spr))
-	{
-		// The model didn't render, but the sprite also isn't
-		// supposed to render, maybe because it's too far
-		// off the screen, or it's behind the viewpoint...
-		if (!spr->dontdrawsprite)
-		{
-			mfloorclip = spr->clipbot;
-			mceilingclip = spr->cliptop;
-			spr->x1 = spr->projx1;
-			spr->x2 = spr->projx2;
-			R_DrawVisSprite(spr);
-		}
-	}
-
-	rsp_mfloorclip = NULL;
-	rsp_mceilingclip = NULL;
-#endif
 }
 
 // Special drawer for precipitation sprites Tails 08-18-2002
@@ -2882,18 +2650,7 @@ void R_DrawMasked(maskcount_t* masks, UINT8 nummasks)
 		viewx = mask->viewx;
 		viewy = mask->viewy;
 		viewz = mask->viewz;
-		viewangle = mask->viewangle;
-		aimingangle = mask->aimingangle;
 		viewsector = mask->viewsector;
-
-#ifdef POLYRENDERER
-		if (modelinview)
-		{
-			if (mask->vissprites[1] - mask->vissprites[0] > 0)
-				RSP_ModelView();
-			rsp_maskdraw = (nummasks - 1);
-		}
-#endif
 
 		R_DrawMaskedList(&heads[nummasks - 1]);
 		R_ClearDrawNodes(&heads[nummasks - 1]);

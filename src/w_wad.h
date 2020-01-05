@@ -91,11 +91,6 @@ typedef struct
 	// A Doom graphic or a PNG.
 	// Converted by W_CachePatchNumPwad.
 	lumpcache_t *lumps;
-	// In the software polygon renderer,
-	// those are 16-bit raw graphics, palette-based.
-	// The upper byte is used to store the pixel's alpha value,
-	// and the lower byte is a palette index.
-	lumpcache_t *software;
 	// Graphics converted to the hardware renderer's native format.
 	// In OpenGL, those can be in RGBA, or be palette-based.
 	// They are then uploaded to the GPU.

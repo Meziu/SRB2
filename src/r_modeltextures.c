@@ -16,10 +16,6 @@
 
 #include "r_modeltextures.h"
 
-#ifdef POLYRENDERER
-#include "polyrenderer/r_softpoly.h"
-#endif
-
 #ifdef HWRENDER
 #include "hardware/hw_md2.h"
 #include "hardware/hw_glide.h"
@@ -312,11 +308,6 @@ boolean Model_LoadTexture(modelinfo_t *model)
 	else
 		texture = model->texture->base;
 
-#ifdef POLYRENDERER
-	if (rendermode == render_soft)
-		RSP_FreeModelTexture(model);
-	else
-#endif
 #ifdef HWRENDER
 	if (rendermode == render_opengl)
 	{
@@ -367,14 +358,8 @@ boolean Model_LoadTexture(modelinfo_t *model)
 	}
 
 	// copy texture into renderer memory
-#ifdef POLYRENDERER
 	if (rendermode == render_soft)
-	{
-		// create base texture
-		RSP_CreateModelTexture(model, 0, 0);
 		return true;
-	}
-#endif
 
 #ifdef HWRENDER
 	if (rendermode == render_opengl)
@@ -448,11 +433,6 @@ boolean Model_LoadBlendTexture(modelinfo_t *model)
 	else
 		texture = model->texture->blend;
 
-#ifdef POLYRENDERER
-	if (rendermode == render_soft)
-		RSP_FreeModelBlendTexture(model);
-	else
-#endif
 #ifdef HWRENDER
 	if (rendermode == render_opengl)
 	{
@@ -504,14 +484,12 @@ boolean Model_LoadBlendTexture(modelinfo_t *model)
 	}
 
 	// copy texture into renderer memory
-#ifdef POLYRENDERER
 	if (rendermode == render_soft)
 	{
 		// nothing to do here
 		Z_Free(filename);
 		return true;
 	}
-#endif
 
 #ifdef HWRENDER
 	if (rendermode == render_opengl)

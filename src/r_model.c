@@ -26,10 +26,6 @@
 #include "errno.h"
 #endif
 
-#ifdef POLYRENDERER
-#include "polyrenderer/r_softpoly.h"
-#endif
-
 #ifdef HWRENDER
 #include "hardware/hw_glob.h"
 #include "hardware/hw_drv.h"
@@ -42,27 +38,14 @@ modelinfo_t md2_models[NUMSPRITES];
 modelinfo_t md2_playermodels[MAXSKINS];
 
 static CV_PossibleValue_t modelinterpolation_cons_t[] = {{0, "Off"}, {1, "Sometimes"}, {2, "Always"}, {0, NULL}};
-#ifdef POLYRENDERER
-static CV_PossibleValue_t texturemapping_cons_t[] = {
-	{TEXMAP_FIXED, "Fixed-Point"},
-	{TEXMAP_FLOAT, "Floating-Point"},
-	{0, NULL}};
-#endif
 
 static void CV_ModelsFile_OnChange(void);
 static void CV_ModelsFolder_OnChange(void);
-
-#ifdef POLYRENDERER
-static void CV_TextureMapping_OnChange(void);
-#endif
 
 consvar_t cv_models = {"models", "Off", CV_SAVE, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
 consvar_t cv_modelinterpolation = {"modelinterpolation", "Sometimes", CV_SAVE, modelinterpolation_cons_t, NULL, 0, NULL, NULL, 0, 0, NULL};
 consvar_t cv_modelsfile = {"modelsfile", "models.dat", CV_SAVE|CV_CALL, NULL, CV_ModelsFile_OnChange, 0, NULL, NULL, 0, 0, NULL};
 consvar_t cv_modelsfolder = {"modelsfolder", "models", CV_SAVE|CV_CALL, NULL, CV_ModelsFolder_OnChange, 0, NULL, NULL, 0, 0, NULL};
-#ifdef POLYRENDERER
-consvar_t cv_texturemapping = {"texturemapping", "Floating-Point", CV_SAVE|CV_CALL, texturemapping_cons_t, CV_TextureMapping_OnChange, 0, NULL, NULL, 0, 0, NULL};
-#endif
 
 static void CV_ModelsFile_OnChange(void)
 {
@@ -83,13 +66,6 @@ static void CV_ModelsFolder_OnChange(void)
 	R_ReloadAllModels();
 }
 
-#ifdef POLYRENDERER
-static void CV_TextureMapping_OnChange(void)
-{
-	R_SetViewSize();
-}
-#endif
-
 //
 // R_Init3DModels
 //
@@ -99,22 +75,11 @@ void R_Init3DModels(void)
 	CV_RegisterVar(&cv_modelsfile);
 	CV_RegisterVar(&cv_modelinterpolation);
 	CV_RegisterVar(&cv_models);
-#ifdef POLYRENDERER
-	CV_RegisterVar(&cv_texturemapping);
-#endif
 
 	R_InitModelInfo();
 
 	strncpy(modelsfile, MODELSFILE, 64);
 	strncpy(modelsfolder, MODELSFOLDER, 64);
-
-#ifdef POLYRENDERER
-	if (M_CheckParm("-nopolyrenderer"))
-	{
-		polyrenderer = false;
-		nopolyrenderer = true;
-	}
-#endif
 }
 
 //
@@ -504,11 +469,6 @@ void Model_UnloadTextures(modelinfo_t *model)
 		FREETEX(blendgrpatch)
 
 		#undef FREETEX
-#endif
-
-#ifdef POLYRENDERER
-		RSP_FreeModelTexture(model);
-		RSP_FreeModelBlendTexture(model);
 #endif
 
 		if (model->texture->base)

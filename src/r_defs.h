@@ -739,16 +739,6 @@ typedef struct
 } rotsprite_t;
 #endif/*ROTSPRITE*/
 
-#ifdef POLYRENDERER
-typedef struct
-{
-	INT16 width;
-	INT16 height;
-	UINT32 lumpnum;
-	UINT16 *data;
-} rsp_spritetexture_t;
-#endif
-
 typedef enum
 {
 	SRF_SINGLE      = 0,   // 0-angle for all rotations

@@ -35,10 +35,6 @@
 #include "m_random.h" // quake camera shake
 #include "r_portal.h"
 
-#ifdef POLYRENDERER
-#include "polyrenderer/r_softpoly.h"
-#endif
-
 #ifdef HWRENDER
 #include "hardware/hw_main.h"
 #endif
@@ -75,13 +71,6 @@ angle_t viewangle, aimingangle;
 fixed_t viewcos, viewsin;
 sector_t *viewsector;
 player_t *viewplayer;
-
-#ifdef POLYRENDERER
-boolean polyrenderer = true;
-boolean nopolyrenderer = false;
-boolean modelinview = false;
-boolean frustumclipping = false;
-#endif
 
 //
 // precalculated math tables
@@ -657,10 +646,6 @@ void R_ExecuteSetViewSize(void)
 #endif
 
 	am_recalc = true;
-#ifdef POLYRENDERER
-	if (polyrenderer)
-		RSP_Viewport(viewwidth, viewheight);
-#endif
 }
 
 //
@@ -688,11 +673,6 @@ void R_Init(void)
 	R_InitTranslationTables();
 
 	R_InitDrawNodes();
-
-#ifdef POLYRENDERER
-	if (polyrenderer)
-		RSP_Init();
-#endif
 
 	framecount = 0;
 }
@@ -1049,8 +1029,6 @@ static void Mask_Pre (maskcount_t* m)
 	m->viewx = viewx;
 	m->viewy = viewy;
 	m->viewz = viewz;
-	m->viewangle = viewangle;
-	m->aimingangle = aimingangle;
 	m->viewsector = viewsector;
 }
 
@@ -1104,14 +1082,6 @@ void R_RenderPlayerView(player_t *player)
 	Mask_Pre(&masks[nummasks - 1]);
 	curdrawsegs = ds_p;
 
-#ifdef POLYRENDERER
-	polyrenderer = ((!nopolyrenderer) && cv_models.value);
-	modelinview = false;
-	frustumclipping = false;
-	if (polyrenderer)
-		RSP_OnFrame();
-#endif
-
 //profile stuff ---------------------------------------------------------
 #ifdef TIMING
 	mytotal = 0;
@@ -1128,11 +1098,6 @@ void R_RenderPlayerView(player_t *player)
 	Mask_Post(&masks[nummasks - 1]);
 
 	R_ClipSprites(drawsegs, NULL);
-
-#ifdef POLYRENDERER
-	if (modelinview)
-		RSP_StoreViewpoint();
-#endif
 
 	// Add skybox portals caused by sky visplanes.
 	if (cv_skybox.value && skyboxmo[0])
@@ -1151,14 +1116,6 @@ void R_RenderPlayerView(player_t *player)
 
 			// Apply the viewpoint stored for the portal.
 			R_PortalFrame(portal);
-
-#ifdef POLYRENDERER
-			if (modelinview)
-			{
-				RSP_ModelView();
-				rsp_maskdraw = (RSP_MASKDRAWBIT | portalrender);
-			}
-#endif
 
 			// Hack in the clipsegs to delimit the starting
 			// clipping for sprites and possibly other similar
@@ -1186,11 +1143,6 @@ void R_RenderPlayerView(player_t *player)
 			Portal_Remove(portal);
 		}
 	}
-
-#ifdef POLYRENDERER
-	if (modelinview)
-		RSP_RestoreViewpoint();
-#endif
 
 	R_DrawPlanes();
 #ifdef FLOORSPLATS

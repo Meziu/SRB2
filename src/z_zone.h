@@ -46,7 +46,6 @@ enum
 	PU_PATCH                 = 14, // static until renderer change
 	PU_MODEL                 = 15, // static entire execution time
 
-	PU_SOFTPOLY              = 20, // Polygon renderer
 	PU_HWRPATCHINFO          = 21, // Hardware GLPatch_t struct for OpenGL texture cache
 	PU_HWRMODELTEXTURE       = 22, // Hardware model texture
 
