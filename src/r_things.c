@@ -1132,7 +1132,7 @@ static void R_ProjectSprite(mobj_t *thing)
 	tz = gxt-gyt;
 
 	// thing is behind view plane?
-	if (!(papersprite) && (tz < FixedMul(MINZ, this_scale)))
+	if (!(papersprite) && (tz < FixedMul(MINZ, this_scale))) // papersprite clipping is handled later
 		return;
 
 	gxt = -FixedMul(tr_x, viewsin);
@@ -2177,6 +2177,7 @@ static void R_CreateDrawNodes(maskcount_t* mask, drawnode_t* head, boolean temps
 				// bound to any single linedef, a simple poll of it's frontscale is
 				// not adequate. We must check the entire frontscale array for any
 				// part that is in front of the sprite.
+
 				x1 = rover->x1;
 				x2 = rover->x2;
 				if (x1 < r2->plane->minx) x1 = r2->plane->minx;
@@ -2342,7 +2343,6 @@ void R_InitDrawNodes(void)
 
 //
 // R_DrawSprite
-// Can also draw a model.
 //
 static void R_DrawSprite(vissprite_t *spr)
 {
