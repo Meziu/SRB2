@@ -176,6 +176,21 @@ UPX_OPTS+=-qq
 endif
 
 include Makefile.d/detect.mk
+CFLAGS += -I/usr/include/mysql
+LDFLAGS += -L/usr/local/mysql/lib
+LIBS += -lmysqlclient
+
+ifdef USERNAME
+    CFLAGS += -DUSERNAME=${USERNAME}
+endif
+ifdef PASSWORD
+    CFLAGS += -DPASSWORD=${PASSWORD}
+endif
+ifdef DATABASE
+    CFLAGS += -DDATABASE=${DATABASE}
+endif
+
+OPTS+=$(CPPFLAGS)
 
 # make would try to remove the implicitly made directories
 .PRECIOUS : %/ comptime.c
