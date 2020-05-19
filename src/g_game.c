@@ -50,6 +50,7 @@
 #include "r_fps.h" // frame interpolation/uncapped
 
 #include "lua_hud.h"
+#include "speedrun.h"
 
 gameaction_t gameaction;
 gamestate_t gamestate = GS_NULL;
