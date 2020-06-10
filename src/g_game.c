@@ -800,6 +800,19 @@ const char *G_BuildMapName(INT32 map)
 	return mapname;
 }
 
+
+const char *G_BuildRealMapName(INT32 map)
+{
+	static char mapname[22+1+11]; // lvlttl[22] + ' ' + INT32
+
+	if (mapheaderinfo[map]->actnum)
+		sprintf(mapname, "%s %d", mapheaderinfo[map]->lvlttl, mapheaderinfo[map]->actnum);
+	else
+		strcpy(mapname, mapheaderinfo[map]->lvlttl);
+
+	return mapname;
+}
+
 /** Clips the console player's mouse aiming to the current view.
   * Used whenever the player view is changed manually.
   *

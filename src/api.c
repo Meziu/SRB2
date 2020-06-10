@@ -1,4 +1,6 @@
 #include "api.h"
+#include "g_game.h"
+#include "r_things.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,14 +8,47 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #define SOCKET_NAME "srb2"
 #define MAX_CLIENTS 1
 #define REQUEST_SIZE 1024
+#define PLAYER_SIZE (MAXPLAYERNAME+SKINNAMESIZE+50)
+#define RESPONSE_SIZE (PLAYER_SIZE*MAXPLAYERS+100)
 #define NO_SOCKET 0
 
 int api_socket;
 client_t connection_list[MAX_CLIENTS];
+
+void api_handle_request(client_t *api_client, char *request) {
+    printf("Request: %s", request);
+    int mapnum = gamemap-1;
+    const char *mapname = G_BuildRealMapName(mapnum);
+    char response[RESPONSE_SIZE];
+    char *response_index = response;
+    response_index += sprintf(response_index, "{\"map\":{\"id\":%d,\"name\":\"%s\"},\"players\":[", mapnum, (char *) mapname);
+    //for every player
+    bool first = true;
+    for (int playernum = 0; playernum < MAXPLAYERS; playernum++) {
+        // if the player is not in game, is a spectator or is dead: skip it
+        if (!playeringame[playernum])
+            continue;
+        if (first) {
+            first = false;
+        } else {
+            response_index += sprintf(response_index, ",");
+        }
+        char player_string[PLAYER_SIZE];
+        char* skin = ((skin_t *)players[playernum].mo->skin)->name;
+        int written = snprintf(player_string, PLAYER_SIZE, "{\"username\":\"%s\",\"skin\":\"%s\"}", player_names[playernum], skin);
+        if (written >= PLAYER_SIZE) {
+            api_error("Too much data written to player string");
+        }
+        response_index += sprintf(response_index, "%s", player_string);
+    }
+    response_index += sprintf(response_index, "]}");
+    api_send_response(api_client, response);
+}
 
 void API_init(void) {
     printf("API_init\n");
@@ -65,7 +100,7 @@ void api_handle_connection() {
             return;
         }
     }
-    dprintf(STDERR_FILENO, "Too many clients connected\n");
+    api_error("Too many clients connected");
 }
 
 void api_send_response(client_t *api_client, char *response) {
@@ -74,11 +109,6 @@ void api_send_response(client_t *api_client, char *response) {
         perror("Writing response");
         return;
     }
-}
-
-void api_handle_request(client_t *api_client, char *request) {
-    printf("Request: %s", request);
-    api_send_response(api_client, request);
 }
 
 void api_receive(client_t *api_client) {
@@ -129,7 +159,7 @@ void api_check_events() {
         }
     }
 
-    tv.tv_sec = 1;
+    tv.tv_sec = 0;
     tv.tv_usec = 0;
 
     retval = select(maxfd + 1, &rfds, NULL, &efds, &tv);
@@ -153,4 +183,8 @@ void api_check_events() {
             }
         }
     }
+}
+
+void api_error(const char* error) {
+    dprintf(STDERR_FILENO, "API: %s\n", error);
 }
