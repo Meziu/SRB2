@@ -72,8 +72,17 @@ void api_handle_connection() {
     dprintf(STDERR_FILENO, "Too many clients connected\n");
 }
 
-void api_handle_request(char *request) {
+void api_send_response(client_t *api_client, char *response) {
+    int written = write(api_client->socket, response, strlen(response)); 
+    if (written == -1) {
+        perror("Writing response");
+        return;
+    }
+}
+
+void api_handle_request(client_t *api_client, char *request) {
     printf("Request: %s", request);
+    api_send_response(api_client, request);
 }
 
 void api_receive(client_t *api_client) {
@@ -90,7 +99,7 @@ void api_receive(client_t *api_client) {
     }
     //Terminate the string
     request[num_read] = '\0';
-    api_handle_request(request);
+    api_handle_request(api_client, request);
 }
 
 void api_close_connection(client_t *api_client) {
