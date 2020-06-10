@@ -47,10 +47,6 @@ void API_init(void) {
         perror("Listening");
     }
     printf("Started listening on socket: %s\n", socket_path);
-    while (1) {
-        api_check_socket();
-    }
-    exit(0);
 }
 
 void api_handle_connection() {
@@ -110,7 +106,7 @@ void api_close_connection(client_t *api_client) {
     api_client->socket = NO_SOCKET;
 }
 
-void api_check_socket() {
+void api_check_events() {
     int maxfd = api_socket;
     fd_set rfds, efds;
     struct timeval tv;

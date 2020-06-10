@@ -670,6 +670,7 @@ void D_SRB2Loop(void)
 
 	for (;;)
 	{
+    	api_check_events();
 		if (lastwipetic)
 		{
 			oldentertics = lastwipetic;
