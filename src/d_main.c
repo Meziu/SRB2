@@ -92,6 +92,7 @@ int	snprintf(char *str, size_t n, const char *fmt, ...);
 #endif
 
 #include "lua_script.h"
+#include "api.h"
 
 // platform independant focus loss
 UINT8 window_notinfocus = false;
@@ -1066,6 +1067,8 @@ static inline void D_Titlebar(void)
 //
 void D_SRB2Main(void)
 {
+	API_init();
+
 	INT32 p;
 
 	INT32 pstartmap = 1;

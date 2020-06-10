@@ -21,3 +21,7 @@ Win32_LIB_ASM_Release
 /.vs
 /debian
 /assets/debian
+.ccls-cache
+compile_commands.json
+.clang-format
+/bin/*
