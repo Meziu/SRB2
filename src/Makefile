@@ -176,7 +176,7 @@ UPX_OPTS+=-qq
 endif
 
 include Makefile.d/detect.mk
-CFLAGS += -I/usr/include/mysql
+CFLAGS += -I/usr/include/mysql -Wdeclaration-after-statement
 LDFLAGS += -L/usr/local/mysql/lib
 LIBS += -lmysqlclient
 
