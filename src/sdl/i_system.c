@@ -5,7 +5,7 @@
 //
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Portions Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 2014-2019 by Sonic Team Junior.
+// Copyright (C) 2014-2023 by Sonic Team Junior.
 //
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -102,7 +102,7 @@ typedef LPVOID (WINAPI *p_MapViewOfFile) (HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 #endif
 #endif
 
-#if (defined (__unix__) && !defined (_MSDOS)) || defined (UNIXCOMMON)
+#if defined (__unix__) || (defined (UNIXCOMMON) && !defined (__APPLE__))
 #include <errno.h>
 #include <sys/wait.h>
 #define NEWSIGNALHANDLER
@@ -137,21 +137,38 @@ typedef LPVOID (WINAPI *p_MapViewOfFile) (HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 #include <errno.h>
 #endif
 
-// Locations for searching the srb2.pk3
 #if defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON)
-#define DEFAULTWADLOCATION1 "/usr/local/share/games/SRB2"
-#define DEFAULTWADLOCATION2 "/usr/local/games/SRB2"
-#define DEFAULTWADLOCATION3 "/usr/share/games/SRB2"
-#define DEFAULTWADLOCATION4 "/usr/games/SRB2"
-#define DEFAULTSEARCHPATH1 "/usr/local/games"
-#define DEFAULTSEARCHPATH2 "/usr/games"
-#define DEFAULTSEARCHPATH3 "/usr/local"
-#elif defined (_WIN32)
-#define DEFAULTWADLOCATION1 "c:\\games\\srb2"
-#define DEFAULTWADLOCATION2 "\\games\\srb2"
-#define DEFAULTSEARCHPATH1 "c:\\games"
-#define DEFAULTSEARCHPATH2 "\\games"
+#include <execinfo.h>
+#include <time.h>
+#define UNIXBACKTRACE
 #endif
+
+// Locations to directly check for srb2.pk3 in
+const char *wadDefaultPaths[] = {
+#if defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON)
+	"/usr/local/share/games/SRB2",
+	"/usr/local/games/SRB2",
+	"/usr/share/games/SRB2",
+	"/usr/games/SRB2",
+#elif defined (_WIN32)
+	"c:\\games\\srb2",
+	"\\games\\srb2",
+#endif
+	NULL
+};
+
+// Folders to recurse through looking for srb2.pk3
+const char *wadSearchPaths[] = {
+#if defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON)
+	"/usr/local/games",
+	"/usr/games",
+	"/usr/local",
+#elif defined (_WIN32)
+	"c:\\games",
+	"\\games",
+#endif
+	NULL
+};
 
 /**	\brief WAD file to look for
 */
@@ -164,9 +181,11 @@ static char returnWadPath[256];
 
 #include "../doomdef.h"
 #include "../m_misc.h"
+#include "../i_time.h"
 #include "../i_video.h"
 #include "../i_sound.h"
 #include "../i_system.h"
+#include "../i_threads.h"
 #include "../screen.h" //vid.WndParent
 #include "../d_net.h"
 #include "../g_game.h"
@@ -177,6 +196,9 @@ static char returnWadPath[256];
 #include "../i_joy.h"
 
 #include "../m_argv.h"
+
+#include "../r_main.h" // Frame interpolation/uncapped
+#include "../r_fps.h"
 
 #ifdef MAC_ALERT
 #include "macosx/mac_alert.h"
@@ -235,6 +257,71 @@ SDL_bool framebuffer = SDL_FALSE;
 
 UINT8 keyboard_started = false;
 
+#ifdef UNIXBACKTRACE
+#define STDERR_WRITE(string) if (fd != -1) I_OutputMsg("%s", string)
+#define CRASHLOG_WRITE(string) if (fd != -1) write(fd, string, strlen(string))
+#define CRASHLOG_STDERR_WRITE(string) \
+	if (fd != -1)\
+		write(fd, string, strlen(string));\
+	I_OutputMsg("%s", string)
+
+static void write_backtrace(INT32 signal)
+{
+	int fd = -1;
+	size_t size;
+	time_t rawtime;
+	struct tm timeinfo;
+
+	enum { BT_SIZE = 1024, STR_SIZE = 32 };
+	void *array[BT_SIZE];
+	char timestr[STR_SIZE];
+
+	const char *error = "An error occurred within SRB2! Send this stack trace to someone who can help!\n";
+	const char *error2 = "(Or find crash-log.txt in your SRB2 directory.)\n"; // Shown only to stderr.
+
+	fd = open(va("%s" PATHSEP "%s", srb2home, "crash-log.txt"), O_CREAT|O_APPEND|O_RDWR, S_IRUSR|S_IWUSR);
+
+	if (fd == -1)
+		I_OutputMsg("\nWARNING: Couldn't open crash log for writing! Make sure your permissions are correct. Please save the below report!\n");
+
+	// Get the current time as a string.
+	time(&rawtime);
+	localtime_r(&rawtime, &timeinfo);
+	strftime(timestr, STR_SIZE, "%a, %d %b %Y %T %z", &timeinfo);
+
+	CRASHLOG_WRITE("------------------------\n"); // Nice looking seperator
+
+	CRASHLOG_STDERR_WRITE("\n"); // Newline to look nice for both outputs.
+	CRASHLOG_STDERR_WRITE(error); // "Oops, SRB2 crashed" message
+	STDERR_WRITE(error2); // Tell the user where the crash log is.
+
+	// Tell the log when we crashed.
+	CRASHLOG_WRITE("Time of crash: ");
+	CRASHLOG_WRITE(timestr);
+	CRASHLOG_WRITE("\n");
+
+	// Give the crash log the cause and a nice 'Backtrace:' thing
+	// The signal is given to the user when the parent process sees we crashed.
+	CRASHLOG_WRITE("Cause: ");
+	CRASHLOG_WRITE(strsignal(signal));
+	CRASHLOG_WRITE("\n"); // Newline for the signal name
+
+	CRASHLOG_STDERR_WRITE("\nBacktrace:\n");
+
+	// Flood the output and log with the backtrace
+	size = backtrace(array, BT_SIZE);
+	backtrace_symbols_fd(array, size, fd);
+	backtrace_symbols_fd(array, size, STDERR_FILENO);
+
+	CRASHLOG_WRITE("\n"); // Write another newline to the log so it looks nice :)
+
+	close(fd);
+}
+#undef STDERR_WRITE
+#undef CRASHLOG_WRITE
+#undef CRASHLOG_STDERR_WRITE
+#endif // UNIXBACKTRACE
+
 static void I_ReportSignal(int num, int coredumped)
 {
 	//static char msg[] = "oh no! back to reality!\r\n";
@@ -284,15 +371,20 @@ static void I_ReportSignal(int num, int coredumped)
 
 	I_OutputMsg("\nProcess killed by signal: %s\n\n", sigmsg);
 
-	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-		"Process killed by signal",
-		sigmsg, NULL);
+	if (!M_CheckParm("-dedicated"))
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+			"Process killed by signal",
+			sigmsg, NULL);
 }
 
 #ifndef NEWSIGNALHANDLER
 FUNCNORETURN static ATTRNORETURN void signal_handler(INT32 num)
 {
 	D_QuitNetGame(); // Fix server freezes
+	CL_AbortDownloadResume();
+#ifdef UNIXBACKTRACE
+	write_backtrace(num);
+#endif
 	I_ReportSignal(num, 0);
 	I_ShutdownSystem();
 	signal(num, SIG_DFL);               //default signal action
@@ -472,7 +564,7 @@ static void I_StartupConsole(void)
 void I_GetConsoleEvents(void)
 {
 	// we use this when sending back commands
-	event_t ev = {0,0,0,0};
+	event_t ev = {0};
 	char key = 0;
 	ssize_t d;
 
@@ -494,7 +586,7 @@ void I_GetConsoleEvents(void)
 			tty_con.buffer[tty_con.cursor] = '\0';
 			tty_Back();
 		}
-		ev.data1 = KEY_BACKSPACE;
+		ev.key = KEY_BACKSPACE;
 	}
 	else if (key < ' ') // check if this is a control char
 	{
@@ -502,19 +594,19 @@ void I_GetConsoleEvents(void)
 		{
 			tty_Clear();
 			tty_con.cursor = 0;
-			ev.data1 = KEY_ENTER;
+			ev.key = KEY_ENTER;
 		}
 		else return;
 	}
 	else
 	{
 		// push regular character
-		ev.data1 = tty_con.buffer[tty_con.cursor] = key;
+		ev.key = tty_con.buffer[tty_con.cursor] = key;
 		tty_con.cursor++;
 		// print the current line (this is differential)
 		d = write(STDOUT_FILENO, &key, 1);
 	}
-	if (ev.data1) D_PostEvent(&ev);
+	if (ev.key) D_PostEvent(&ev);
 	//tty_FlushIn();
 	(void)d;
 }
@@ -548,20 +640,18 @@ static void Impl_HandleKeyboardConsoleEvent(KEY_EVENT_RECORD evt, HANDLE co)
 		{
 			case VK_ESCAPE:
 			case VK_TAB:
-				event.data1 = KEY_NULL;
-				break;
-			case VK_SHIFT:
-				event.data1 = KEY_LSHIFT;
+				event.key = KEY_NULL;
 				break;
 			case VK_RETURN:
 				entering_con_command = false;
 				/* FALLTHRU */
 			default:
-				event.data1 = MapVirtualKey(evt.wVirtualKeyCode,2); // convert in to char
+				//event.key = MapVirtualKey(evt.wVirtualKeyCode,2); // convert in to char
+				event.key = evt.uChar.AsciiChar;
 		}
 		if (co != INVALID_HANDLE_VALUE && GetFileType(co) == FILE_TYPE_CHAR && GetConsoleMode(co, &t))
 		{
-			if (event.data1 && event.data1 != KEY_LSHIFT && event.data1 != KEY_RSHIFT)
+			if (event.key && event.key != KEY_LSHIFT && event.key != KEY_RSHIFT)
 			{
 #ifdef _UNICODE
 				WriteConsole(co, &evt.uChar.UnicodeChar, 1, &t, NULL);
@@ -576,19 +666,7 @@ static void Impl_HandleKeyboardConsoleEvent(KEY_EVENT_RECORD evt, HANDLE co)
 			}
 		}
 	}
-	else
-	{
-		event.type = ev_keyup;
-		switch (evt.wVirtualKeyCode)
-		{
-			case VK_SHIFT:
-				event.data1 = KEY_LSHIFT;
-				break;
-			default:
-				break;
-		}
-	}
-	if (event.data1) D_PostEvent(&event);
+	if (event.key) D_PostEvent(&event);
 }
 
 void I_GetConsoleEvents(void)
@@ -696,6 +774,28 @@ static void I_RegisterSignals (void)
 	signal(SIGFPE , signal_handler);
 #endif
 }
+
+#ifdef NEWSIGNALHANDLER
+static void signal_handler_child(INT32 num)
+{
+#ifdef UNIXBACKTRACE
+	write_backtrace(num);
+#endif
+
+	signal(num, SIG_DFL);               //default signal action
+	raise(num);
+}
+
+static void I_RegisterChildSignals(void)
+{
+	// If these defines don't exist,
+	// then compilation would have failed above us...
+	signal(SIGILL , signal_handler_child);
+	signal(SIGSEGV , signal_handler_child);
+	signal(SIGABRT , signal_handler_child);
+	signal(SIGFPE , signal_handler_child);
+}
+#endif
 
 //
 //I_OutputMsg
@@ -831,7 +931,7 @@ INT32 I_GetKey (void)
 		ev = &events[eventtail];
 		if (ev->type == ev_keydown || ev->type == ev_console)
 		{
-			rc = ev->data1;
+			rc = ev->key;
 			continue;
 		}
 	}
@@ -891,22 +991,22 @@ void I_ShutdownJoystick(void)
 	INT32 i;
 	event_t event;
 	event.type=ev_keyup;
-	event.data2 = 0;
-	event.data3 = 0;
+	event.x = 0;
+	event.y = 0;
 
 	lastjoybuttons = lastjoyhats = 0;
 
 	// emulate the up of all joystick buttons
 	for (i=0;i<JOYBUTTONS;i++)
 	{
-		event.data1=KEY_JOY1+i;
+		event.key=KEY_JOY1+i;
 		D_PostEvent(&event);
 	}
 
 	// emulate the up of all joystick hats
 	for (i=0;i<JOYHATS*4;i++)
 	{
-		event.data1=KEY_HAT1+i;
+		event.key=KEY_HAT1+i;
 		D_PostEvent(&event);
 	}
 
@@ -914,7 +1014,7 @@ void I_ShutdownJoystick(void)
 	event.type = ev_joystick;
 	for (i=0;i<JOYAXISSET; i++)
 	{
-		event.data1 = i;
+		event.key = i;
 		D_PostEvent(&event);
 	}
 
@@ -926,7 +1026,7 @@ void I_ShutdownJoystick(void)
 
 void I_GetJoystickEvents(void)
 {
-	static event_t event = {0,0,0,0};
+	static event_t event = {0,0,0,0,false};
 	INT32 i = 0;
 	UINT64 joyhats = 0;
 #if 0
@@ -963,7 +1063,7 @@ void I_GetJoystickEvents(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.data1 = KEY_JOY1 + i;
+				event.key = KEY_JOY1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -994,7 +1094,7 @@ void I_GetJoystickEvents(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.data1 = KEY_HAT1 + i;
+				event.key = KEY_HAT1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -1006,7 +1106,7 @@ void I_GetJoystickEvents(void)
 
 	for (i = JOYAXISSET - 1; i >= 0; i--)
 	{
-		event.data1 = i;
+		event.key = i;
 		if (i*2 + 1 <= JoyInfo.axises)
 			axisx = SDL_JoystickGetAxis(JoyInfo.dev, i*2 + 0);
 		else axisx = 0;
@@ -1024,15 +1124,15 @@ void I_GetJoystickEvents(void)
 		{
 			// gamepad control type, on or off, live or die
 			if (axisx < -(JOYAXISRANGE/2))
-				event.data2 = -1;
+				event.x = -1;
 			else if (axisx > (JOYAXISRANGE/2))
-				event.data2 = 1;
-			else event.data2 = 0;
+				event.x = 1;
+			else event.x = 0;
 			if (axisy < -(JOYAXISRANGE/2))
-				event.data3 = -1;
+				event.y = -1;
 			else if (axisy > (JOYAXISRANGE/2))
-				event.data3 = 1;
-			else event.data3 = 0;
+				event.y = 1;
+			else event.y = 0;
 		}
 		else
 		{
@@ -1046,8 +1146,8 @@ void I_GetJoystickEvents(void)
 #endif
 
 			// analog control style , just send the raw data
-			event.data2 = axisx; // x axis
-			event.data3 = axisy; // y axis
+			event.x = axisx; // x axis
+			event.y = axisy; // y axis
 		}
 		D_PostEvent(&event);
 	}
@@ -1161,22 +1261,22 @@ void I_ShutdownJoystick2(void)
 	INT32 i;
 	event_t event;
 	event.type = ev_keyup;
-	event.data2 = 0;
-	event.data3 = 0;
+	event.x = 0;
+	event.y = 0;
 
 	lastjoy2buttons = lastjoy2hats = 0;
 
 	// emulate the up of all joystick buttons
 	for (i = 0; i < JOYBUTTONS; i++)
 	{
-		event.data1 = KEY_2JOY1 + i;
+		event.key = KEY_2JOY1 + i;
 		D_PostEvent(&event);
 	}
 
 	// emulate the up of all joystick hats
 	for (i = 0; i < JOYHATS*4; i++)
 	{
-		event.data1 = KEY_2HAT1 + i;
+		event.key = KEY_2HAT1 + i;
 		D_PostEvent(&event);
 	}
 
@@ -1184,7 +1284,7 @@ void I_ShutdownJoystick2(void)
 	event.type = ev_joystick2;
 	for (i = 0; i < JOYAXISSET; i++)
 	{
-		event.data1 = i;
+		event.key = i;
 		D_PostEvent(&event);
 	}
 
@@ -1196,7 +1296,7 @@ void I_ShutdownJoystick2(void)
 
 void I_GetJoystick2Events(void)
 {
-	static event_t event = {0,0,0,0};
+	static event_t event = {0,0,0,0,false};
 	INT32 i = 0;
 	UINT64 joyhats = 0;
 #if 0
@@ -1235,7 +1335,7 @@ void I_GetJoystick2Events(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.data1 = KEY_2JOY1 + i;
+				event.key = KEY_2JOY1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -1266,7 +1366,7 @@ void I_GetJoystick2Events(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.data1 = KEY_2HAT1 + i;
+				event.key = KEY_2HAT1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -1278,7 +1378,7 @@ void I_GetJoystick2Events(void)
 
 	for (i = JOYAXISSET - 1; i >= 0; i--)
 	{
-		event.data1 = i;
+		event.key = i;
 		if (i*2 + 1 <= JoyInfo2.axises)
 			axisx = SDL_JoystickGetAxis(JoyInfo2.dev, i*2 + 0);
 		else axisx = 0;
@@ -1294,17 +1394,17 @@ void I_GetJoystick2Events(void)
 		{
 			// gamepad control type, on or off, live or die
 			if (axisx < -(JOYAXISRANGE/2))
-				event.data2 = -1;
+				event.x = -1;
 			else if (axisx > (JOYAXISRANGE/2))
-				event.data2 = 1;
+				event.x = 1;
 			else
-				event.data2 = 0;
+				event.x = 0;
 			if (axisy < -(JOYAXISRANGE/2))
-				event.data3 = -1;
+				event.y = -1;
 			else if (axisy > (JOYAXISRANGE/2))
-				event.data3 = 1;
+				event.y = 1;
 			else
-				event.data3 = 0;
+				event.y = 0;
 		}
 		else
 		{
@@ -1318,8 +1418,8 @@ void I_GetJoystick2Events(void)
 #endif
 
 			// analog control style , just send the raw data
-			event.data2 = axisx; // x axis
-			event.data3 = axisy; // y axis
+			event.x = axisx; // x axis
+			event.y = axisy; // y axis
 		}
 		D_PostEvent(&event);
 	}
@@ -1718,7 +1818,7 @@ void I_GetMouseEvents(void)
 					if (!(button & (1<<j))) //keyup
 					{
 						event.type = ev_keyup;
-						event.data1 = KEY_2MOUSE1+j;
+						event.key = KEY_2MOUSE1+j;
 						D_PostEvent(&event);
 						om2b ^= 1 << j;
 					}
@@ -1728,18 +1828,18 @@ void I_GetMouseEvents(void)
 					if (button & (1<<j))
 					{
 						event.type = ev_keydown;
-						event.data1 = KEY_2MOUSE1+j;
+						event.key = KEY_2MOUSE1+j;
 						D_PostEvent(&event);
 						om2b ^= 1 << j;
 					}
 				}
 			}
-			event.data2 = ((SINT8)mdata[1])+((SINT8)mdata[3]);
-			event.data3 = ((SINT8)mdata[2])+((SINT8)mdata[4]);
-			if (event.data2 && event.data3)
+			event.x = ((SINT8)mdata[1])+((SINT8)mdata[3]);
+			event.y = ((SINT8)mdata[2])+((SINT8)mdata[4]);
+			if (event.x && event.y)
 			{
 				event.type = ev_mouse2;
-				event.data1 = 0;
+				event.key = 0;
 				D_PostEvent(&event);
 			}
 		}
@@ -1781,7 +1881,7 @@ static void I_ShutdownMouse2(void)
 	for (i = 0; i < MOUSEBUTTONS; i++)
 	{
 		event.type = ev_keyup;
-		event.data1 = KEY_2MOUSE1+i;
+		event.key = KEY_2MOUSE1+i;
 		D_PostEvent(&event);
 	}
 
@@ -1872,7 +1972,7 @@ void I_GetMouseEvents(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.data1 = KEY_2MOUSE1+i;
+				event.key = KEY_2MOUSE1+i;
 				D_PostEvent(&event);
 			}
 	}
@@ -1880,10 +1980,10 @@ void I_GetMouseEvents(void)
 	if (handlermouse2x != 0 || handlermouse2y != 0)
 	{
 		event.type = ev_mouse2;
-		event.data1 = 0;
-//		event.data1 = buttons; // not needed
-		event.data2 = handlermouse2x << 1;
-		event.data3 = -handlermouse2y << 1;
+		event.key = 0;
+//		event.key = buttons; // not needed
+		event.x = handlermouse2x << 1;
+		event.y = handlermouse2y << 1;
 		handlermouse2x = 0;
 		handlermouse2y = 0;
 
@@ -2048,122 +2148,85 @@ ticcmd_t *I_BaseTiccmd2(void)
 	return &emptycmd2;
 }
 
-#if defined (_WIN32)
-static HMODULE winmm = NULL;
-static DWORD starttickcount = 0; // hack for win2k time bug
-static p_timeGetTime pfntimeGetTime = NULL;
-
-// ---------
-// I_GetTime
-// Use the High Resolution Timer if available,
-// else use the multimedia timer which has 1 millisecond precision on Windowz 95,
-// but lower precision on Windows NT
-// ---------
-
-tic_t I_GetTime(void)
-{
-	tic_t newtics = 0;
-
-	if (!starttickcount) // high precision timer
-	{
-		LARGE_INTEGER currtime; // use only LowPart if high resolution counter is not available
-		static LARGE_INTEGER basetime = {{0, 0}};
-
-		// use this if High Resolution timer is found
-		static LARGE_INTEGER frequency;
-
-		if (!basetime.LowPart)
-		{
-			if (!QueryPerformanceFrequency(&frequency))
-				frequency.QuadPart = 0;
-			else
-				QueryPerformanceCounter(&basetime);
-		}
-
-		if (frequency.LowPart && QueryPerformanceCounter(&currtime))
-		{
-			newtics = (INT32)((currtime.QuadPart - basetime.QuadPart) * NEWTICRATE
-				/ frequency.QuadPart);
-		}
-		else if (pfntimeGetTime)
-		{
-			currtime.LowPart = pfntimeGetTime();
-			if (!basetime.LowPart)
-				basetime.LowPart = currtime.LowPart;
-			newtics = ((currtime.LowPart - basetime.LowPart)/(1000/NEWTICRATE));
-		}
-	}
-	else
-		newtics = (GetTickCount() - starttickcount)/(1000/NEWTICRATE);
-
-	return newtics;
-}
-
-static void I_ShutdownTimer(void)
-{
-	pfntimeGetTime = NULL;
-	if (winmm)
-	{
-		p_timeEndPeriod pfntimeEndPeriod = (p_timeEndPeriod)(LPVOID)GetProcAddress(winmm, "timeEndPeriod");
-		if (pfntimeEndPeriod)
-			pfntimeEndPeriod(1);
-		FreeLibrary(winmm);
-		winmm = NULL;
-	}
-}
-#else
 //
 // I_GetTime
 // returns time in 1/TICRATE second tics
 //
-tic_t I_GetTime (void)
+
+static Uint64 timer_frequency;
+
+precise_t I_GetPreciseTime(void)
 {
-	static Uint64 basetime = 0;
-		   Uint64 ticks = SDL_GetTicks();
-
-	if (!basetime)
-		basetime = ticks;
-
-	ticks -= basetime;
-
-	ticks = (ticks*TICRATE);
-
-	ticks = (ticks/1000);
-
-	return (tic_t)ticks;
+	return SDL_GetPerformanceCounter();
 }
-#endif
+
+UINT64 I_GetPrecisePrecision(void)
+{
+	return SDL_GetPerformanceFrequency();
+}
+
+static UINT32 frame_rate;
+
+static double frame_frequency;
+static UINT64 frame_epoch;
+static double elapsed_frames;
+
+static void I_InitFrameTime(const UINT64 now, const UINT32 cap)
+{
+	frame_rate = cap;
+	frame_epoch = now;
+
+	//elapsed_frames = 0.0;
+
+	if (frame_rate == 0)
+	{
+		// Shouldn't be used, but just in case...?
+		frame_frequency = 1.0;
+		return;
+	}
+
+	frame_frequency = timer_frequency / (double)frame_rate;
+}
+
+double I_GetFrameTime(void)
+{
+	const UINT64 now = SDL_GetPerformanceCounter();
+	const UINT32 cap = R_GetFramerateCap();
+
+	if (cap != frame_rate)
+	{
+		// Maybe do this in a OnChange function for cv_fpscap?
+		I_InitFrameTime(now, cap);
+	}
+
+	if (frame_rate == 0)
+	{
+		// Always advance a frame.
+		elapsed_frames += 1.0;
+	}
+	else
+	{
+		elapsed_frames += (now - frame_epoch) / frame_frequency;
+	}
+
+	frame_epoch = now; // moving epoch
+	return elapsed_frames;
+}
 
 //
-//I_StartupTimer
+// I_StartupTimer
 //
 void I_StartupTimer(void)
 {
-#ifdef _WIN32
-	// for win2k time bug
-	if (M_CheckParm("-gettickcount"))
-	{
-		starttickcount = GetTickCount();
-		CONS_Printf("%s", M_GetText("Using GetTickCount()\n"));
-	}
-	winmm = LoadLibraryA("winmm.dll");
-	if (winmm)
-	{
-		p_timeEndPeriod pfntimeBeginPeriod = (p_timeEndPeriod)(LPVOID)GetProcAddress(winmm, "timeBeginPeriod");
-		if (pfntimeBeginPeriod)
-			pfntimeBeginPeriod(1);
-		pfntimeGetTime = (p_timeGetTime)(LPVOID)GetProcAddress(winmm, "timeGetTime");
-	}
-	I_AddExitFunc(I_ShutdownTimer);
-#endif
+	timer_frequency = SDL_GetPerformanceFrequency();
+
+	I_InitFrameTime(0, R_GetFramerateCap());
+	elapsed_frames  = 0.0;
 }
 
-
-
-void I_Sleep(void)
+void I_Sleep(UINT32 ms)
 {
-	if (cv_sleep.value != -1)
-		SDL_Delay(cv_sleep.value);
+	SDL_Delay(ms);
 }
 
 #ifdef NEWSIGNALHANDLER
@@ -2179,9 +2242,10 @@ static void newsignalhandler_Warn(const char *pr)
 
 	I_OutputMsg("%s\n", text);
 
-	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-		"Startup error",
-		text, NULL);
+	if (!M_CheckParm("-dedicated"))
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+			"Startup error",
+			text, NULL);
 
 	I_ShutdownConsole();
 	exit(-1);
@@ -2202,6 +2266,7 @@ static void I_Fork(void)
 			newsignalhandler_Warn("fork()");
 			break;
 		case 0:
+			I_RegisterChildSignals();
 			break;
 		default:
 			if (logstream)
@@ -2251,6 +2316,10 @@ INT32 I_StartupSystem(void)
 	SDL_version SDLlinked;
 	SDL_VERSION(&SDLcompiled)
 	SDL_GetVersion(&SDLlinked);
+#ifdef HAVE_THREADS
+	I_start_threads();
+	I_AddExitFunc(I_stop_threads);
+#endif
 	I_StartupConsole();
 #ifdef NEWSIGNALHANDLER
 	I_Fork();
@@ -2293,9 +2362,10 @@ void I_Quit(void)
 		G_StopMetalRecording(false);
 
 	D_QuitNetGame();
+	CL_AbortDownloadResume();
+	M_FreePlayerSetupColors();
 	I_ShutdownMusic();
 	I_ShutdownSound();
-	I_ShutdownCD();
 	// use this for 1.28 19990220 by Kin
 	I_ShutdownGraphics();
 	I_ShutdownInput();
@@ -2356,16 +2426,14 @@ void I_Error(const char *error, ...)
 		if (errorcount == 3)
 			I_ShutdownSound();
 		if (errorcount == 4)
-			I_ShutdownCD();
-		if (errorcount == 5)
 			I_ShutdownGraphics();
-		if (errorcount == 6)
+		if (errorcount == 5)
 			I_ShutdownInput();
-		if (errorcount == 7)
+		if (errorcount == 6)
 			I_ShutdownSystem();
-		if (errorcount == 8)
+		if (errorcount == 7)
 			SDL_Quit();
-		if (errorcount == 9)
+		if (errorcount == 8)
 		{
 			M_SaveConfig(NULL);
 			G_SaveGameData();
@@ -2378,9 +2446,10 @@ void I_Error(const char *error, ...)
 			// Implement message box with SDL_ShowSimpleMessageBox,
 			// which should fail gracefully if it can't put a message box up
 			// on the target system
-			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-				"SRB2 "VERSIONSTRING" Recursive Error",
-				buffer, NULL);
+			if (!M_CheckParm("-dedicated"))
+				SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+					"SRB2 "VERSIONSTRING" Recursive Error",
+					buffer, NULL);
 
 			W_Shutdown();
 			exit(-1); // recursive errors detected
@@ -2409,9 +2478,10 @@ void I_Error(const char *error, ...)
 		G_StopMetalRecording(false);
 
 	D_QuitNetGame();
+	CL_AbortDownloadResume();
+	M_FreePlayerSetupColors();
 	I_ShutdownMusic();
 	I_ShutdownSound();
-	I_ShutdownCD();
 	// use this for 1.28 19990220 by Kin
 	I_ShutdownGraphics();
 	I_ShutdownInput();
@@ -2421,9 +2491,10 @@ void I_Error(const char *error, ...)
 	// Implement message box with SDL_ShowSimpleMessageBox,
 	// which should fail gracefully if it can't put a message box up
 	// on the target system
-	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-		"SRB2 "VERSIONSTRING" Error",
-		buffer, NULL);
+	if (!M_CheckParm("-dedicated"))
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+			"SRB2 "VERSIONSTRING" Error",
+			buffer, NULL);
 	// Note that SDL_ShowSimpleMessageBox does *not* require SDL to be
 	// initialized at the time, so calling it after SDL_Quit() is
 	// perfectly okay! In addition, we do this on purpose so the
@@ -2484,7 +2555,7 @@ void I_RemoveExitFunc(void (*func)())
 	}
 }
 
-#ifndef __unix__
+#if !(defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON))
 static void Shittycopyerror(const char *name)
 {
 	I_OutputMsg(
@@ -2524,7 +2595,7 @@ static void Shittylogcopy(void)
 		Shittycopyerror(logfilename);
 	}
 }
-#endif/*__unix__*/
+#endif/*!(defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON))*/
 
 //
 //  Closes down everything. This includes restoring the initial
@@ -2548,7 +2619,7 @@ void I_ShutdownSystem(void)
 	if (logstream)
 	{
 		I_OutputMsg("I_ShutdownSystem(): end of logstream.\n");
-#ifndef __unix__
+#if !(defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON))
 		Shittylogcopy();
 #endif
 		fclose(logstream);
@@ -2566,7 +2637,7 @@ void I_GetDiskFreeSpace(INT64 *freespace)
 	return;
 #else // Both Linux and BSD have this, apparently.
 	struct statfs stfs;
-	if (statfs(".", &stfs) == -1)
+	if (statfs(srb2home, &stfs) == -1)
 	{
 		*freespace = INT32_MAX;
 		return;
@@ -2585,7 +2656,7 @@ void I_GetDiskFreeSpace(INT64 *freespace)
 	}
 	if (pfnGetDiskFreeSpaceEx)
 	{
-		if (pfnGetDiskFreeSpaceEx(NULL, &lfreespace, &usedbytes, NULL))
+		if (pfnGetDiskFreeSpaceEx(srb2home, &lfreespace, &usedbytes, NULL))
 			*freespace = lfreespace.QuadPart;
 		else
 			*freespace = INT32_MAX;
@@ -2691,10 +2762,10 @@ const char *I_ClipboardPaste(void)
 
 	if (!SDL_HasClipboardText())
 		return NULL;
+
 	clipboard_contents = SDL_GetClipboardText();
-	memcpy(clipboard_modified, clipboard_contents, 255);
+	strlcpy(clipboard_modified, clipboard_contents, 256);
 	SDL_free(clipboard_contents);
-	clipboard_modified[255] = 0;
 
 	while (*i)
 	{
@@ -2776,6 +2847,20 @@ static const char *searchWad(const char *searchDir)
 	return NULL;
 }
 
+#define CHECKWADPATH(ret) \
+do { \
+	I_OutputMsg(",%s", returnWadPath); \
+	if (isWadPathOk(returnWadPath)) \
+		return ret; \
+} while (0)
+
+#define SEARCHWAD(str) \
+do { \
+	WadPath = searchWad(str); \
+	if (WadPath) \
+		return WadPath; \
+} while (0)
+
 /**	\brief go through all possible paths and look for srb2.pk3
 
   \return path to srb2.pk3 if any
@@ -2784,6 +2869,7 @@ static const char *locateWad(void)
 {
 	const char *envstr;
 	const char *WadPath;
+	int i;
 
 	I_OutputMsg("SRB2WADDIR");
 	// does SRB2WADDIR exist?
@@ -2791,108 +2877,37 @@ static const char *locateWad(void)
 		return envstr;
 
 #ifndef NOCWD
-	I_OutputMsg(",.");
 	// examine current dir
 	strcpy(returnWadPath, ".");
-	if (isWadPathOk(returnWadPath))
-		return NULL;
-#endif
-
-
-#ifdef CMAKECONFIG
-#ifndef NDEBUG
-	I_OutputMsg(","CMAKE_ASSETS_DIR);
-	strcpy(returnWadPath, CMAKE_ASSETS_DIR);
-	if (isWadPathOk(returnWadPath))
-	{
-		return returnWadPath;
-	}
-#endif
+	CHECKWADPATH(NULL);
 #endif
 
 #ifdef __APPLE__
 	OSX_GetResourcesPath(returnWadPath);
-	I_OutputMsg(",%s", returnWadPath);
-	if (isWadPathOk(returnWadPath))
-	{
-		return returnWadPath;
-	}
+	CHECKWADPATH(returnWadPath);
 #endif
 
 	// examine default dirs
-#ifdef DEFAULTWADLOCATION1
-	I_OutputMsg(","DEFAULTWADLOCATION1);
-	strcpy(returnWadPath, DEFAULTWADLOCATION1);
-	if (isWadPathOk(returnWadPath))
-		return returnWadPath;
-#endif
-#ifdef DEFAULTWADLOCATION2
-	I_OutputMsg(","DEFAULTWADLOCATION2);
-	strcpy(returnWadPath, DEFAULTWADLOCATION2);
-	if (isWadPathOk(returnWadPath))
-		return returnWadPath;
-#endif
-#ifdef DEFAULTWADLOCATION3
-	I_OutputMsg(","DEFAULTWADLOCATION3);
-	strcpy(returnWadPath, DEFAULTWADLOCATION3);
-	if (isWadPathOk(returnWadPath))
-		return returnWadPath;
-#endif
-#ifdef DEFAULTWADLOCATION4
-	I_OutputMsg(","DEFAULTWADLOCATION4);
-	strcpy(returnWadPath, DEFAULTWADLOCATION4);
-	if (isWadPathOk(returnWadPath))
-		return returnWadPath;
-#endif
-#ifdef DEFAULTWADLOCATION5
-	I_OutputMsg(","DEFAULTWADLOCATION5);
-	strcpy(returnWadPath, DEFAULTWADLOCATION5);
-	if (isWadPathOk(returnWadPath))
-		return returnWadPath;
-#endif
-#ifdef DEFAULTWADLOCATION6
-	I_OutputMsg(","DEFAULTWADLOCATION6);
-	strcpy(returnWadPath, DEFAULTWADLOCATION6);
-	if (isWadPathOk(returnWadPath))
-		return returnWadPath;
-#endif
-#ifdef DEFAULTWADLOCATION7
-	I_OutputMsg(","DEFAULTWADLOCATION7);
-	strcpy(returnWadPath, DEFAULTWADLOCATION7);
-	if (isWadPathOk(returnWadPath))
-		return returnWadPath;
-#endif
+	for (i = 0; wadDefaultPaths[i]; i++)
+	{
+		strcpy(returnWadPath, wadDefaultPaths[i]);
+		CHECKWADPATH(returnWadPath);
+	}
+
 #ifndef NOHOME
 	// find in $HOME
 	I_OutputMsg(",HOME");
 	if ((envstr = I_GetEnv("HOME")) != NULL)
+		SEARCHWAD(envstr);
+#endif
+
+	// search paths
+	for (i = 0; wadSearchPaths[i]; i++)
 	{
-		WadPath = searchWad(envstr);
-		if (WadPath)
-			return WadPath;
+		I_OutputMsg(", in:%s", wadSearchPaths[i]);
+		SEARCHWAD(wadSearchPaths[i]);
 	}
-#endif
-#ifdef DEFAULTSEARCHPATH1
-	// find in /usr/local
-	I_OutputMsg(", in:"DEFAULTSEARCHPATH1);
-	WadPath = searchWad(DEFAULTSEARCHPATH1);
-	if (WadPath)
-		return WadPath;
-#endif
-#ifdef DEFAULTSEARCHPATH2
-	// find in /usr/games
-	I_OutputMsg(", in:"DEFAULTSEARCHPATH2);
-	WadPath = searchWad(DEFAULTSEARCHPATH2);
-	if (WadPath)
-		return WadPath;
-#endif
-#ifdef DEFAULTSEARCHPATH3
-	// find in ???
-	I_OutputMsg(", in:"DEFAULTSEARCHPATH3);
-	WadPath = searchWad(DEFAULTSEARCHPATH3);
-	if (WadPath)
-		return WadPath;
-#endif
+
 	// if nothing was found
 	return NULL;
 }

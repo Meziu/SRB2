@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2019 by Sonic Team Junior.
+// Copyright (C) 1999-2023 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -15,10 +15,12 @@
 
 #include "doomdef.h"
 #include "console.h"
+#include "m_easing.h" // For Easing_InOutSine, used in R_UpdatePlaneRipple
 #include "g_game.h"
 #include "p_setup.h" // levelflats
 #include "p_slopes.h"
 #include "r_data.h"
+#include "r_textures.h"
 #include "r_local.h"
 #include "r_state.h"
 #include "r_splats.h" // faB(21jan):testing
@@ -30,22 +32,9 @@
 #include "z_zone.h"
 #include "p_tick.h"
 
-#ifdef TIMING
-#include "p5prof.h"
-	INT64 mycount;
-	INT64 mytotal = 0;
-	UINT32 nombre = 100000;
-#endif
-
 //
 // opening
 //
-
-// Quincunx antialiasing of flats!
-//#define QUINCUNX
-
-// good night sweet prince
-#define SHITPLANESPARENCY
 
 //SoM: 3/23/2000: Use Boom visplane hashing.
 
@@ -62,7 +51,7 @@ INT32 numffloors;
 
 //SoM: 3/23/2000: Boom visplane hashing routine.
 #define visplane_hash(picnum,lightlevel,height) \
-  ((unsigned)((picnum)*3+(lightlevel)+(height)*7) & (MAXVISPLANES-1))
+  ((unsigned)((picnum)*3+(lightlevel)+(height)*7) & VISPLANEHASHMASK)
 
 //SoM: 3/23/2000: Use boom opening limit removal
 size_t maxopenings;
@@ -98,14 +87,13 @@ static fixed_t planeheight;
 fixed_t yslopetab[MAXVIDHEIGHT*16];
 fixed_t *yslope;
 
-fixed_t basexscale, baseyscale;
-
 fixed_t cachedheight[MAXVIDHEIGHT];
 fixed_t cacheddistance[MAXVIDHEIGHT];
 fixed_t cachedxstep[MAXVIDHEIGHT];
 fixed_t cachedystep[MAXVIDHEIGHT];
 
 static fixed_t xoffs, yoffs;
+static floatv3_t ds_slope_origin, ds_slope_u, ds_slope_v;
 
 //
 // R_InitPlanes
@@ -117,51 +105,50 @@ void R_InitPlanes(void)
 }
 
 //
-// Water ripple effect!!
+// Water ripple effect
 // Needs the height of the plane, and the vertical position of the span.
-// Sets ripple_xfrac and ripple_yfrac, added to ds_xfrac and ds_yfrac, if the span is not tilted.
+// Sets planeripple.xfrac and planeripple.yfrac, added to ds_xfrac and ds_yfrac, if the span is not tilted.
 //
 
-#ifndef NOWATER
-INT32 ds_bgofs;
-INT32 ds_waterofs;
-
-static INT32 wtofs=0;
-static boolean itswater;
-static fixed_t ripple_xfrac;
-static fixed_t ripple_yfrac;
-
-static void R_PlaneRipple(visplane_t *plane, INT32 y, fixed_t plheight)
+static struct
 {
-	fixed_t distance = FixedMul(plheight, yslope[y]);
-	const INT32 yay = (wtofs + (distance>>9) ) & 8191;
-	// ripples da water texture
-	angle_t angle = (plane->viewangle + plane->plangle)>>ANGLETOFINESHIFT;
-	ds_bgofs = FixedDiv(FINESINE(yay), (1<<12) + (distance>>11))>>FRACBITS;
+	INT32 offset;
+	fixed_t xfrac, yfrac;
+	boolean active;
+} planeripple;
 
-	angle = (angle + 2048) & 8191;  // 90 degrees
-	ripple_xfrac = FixedMul(FINECOSINE(angle), (ds_bgofs<<FRACBITS));
-	ripple_yfrac = FixedMul(FINESINE(angle), (ds_bgofs<<FRACBITS));
+// ripples da water texture
+static fixed_t R_CalculateRippleOffset(INT32 y)
+{
+	fixed_t distance = FixedMul(planeheight, yslope[y]);
+	const INT32 yay = (planeripple.offset + (distance>>9)) & 8191;
+	return FixedDiv(FINESINE(yay), (1<<12) + (distance>>11));
 }
-#endif
 
-//
-// R_MapPlane
-//
-// Uses global vars:
-//  basexscale
-//  baseyscale
-//  centerx
-//  viewx
-//  viewy
-//  viewsin
-//  viewcos
-//  viewheight
+static void R_CalculatePlaneRipple(angle_t angle)
+{
+	angle >>= ANGLETOFINESHIFT;
+	angle = (angle + 2048) & 8191; // 90 degrees
+	planeripple.xfrac = FixedMul(FINECOSINE(angle), ds_bgofs);
+	planeripple.yfrac = FixedMul(FINESINE(angle), ds_bgofs);
+}
 
-void R_MapPlane(INT32 y, INT32 x1, INT32 x2)
+static void R_UpdatePlaneRipple(void)
+{
+	// ds_waterofs oscillates between 0 and 16384 every other tic
+	// Now that frame interpolation is a thing, HOW does it oscillate?
+	// The difference between linear interpolation and a sine wave is miniscule here,
+	// but a sine wave is ever so slightly smoother and sleeker
+	ds_waterofs = Easing_InOutSine(((leveltime & 1)*FRACUNIT) + rendertimefrac,16384,0);
+
+	// Meanwhile, planeripple.offset just counts up, so it gets simple linear interpolation
+	planeripple.offset = ((leveltime-1)*140) + ((rendertimefrac*140) / FRACUNIT);
+}
+
+static void R_MapPlane(INT32 y, INT32 x1, INT32 x2)
 {
 	angle_t angle, planecos, planesin;
-	fixed_t distance, span;
+	fixed_t distance = 0, span;
 	size_t pindex;
 
 #ifdef RANGECHECK
@@ -169,8 +156,8 @@ void R_MapPlane(INT32 y, INT32 x1, INT32 x2)
 		I_Error("R_MapPlane: %d, %d at %d", x1, x2, y);
 #endif
 
-	// from r_splats's R_RenderFloorSplat
-	if (x1 >= vid.width) x1 = vid.width - 1;
+	if (x1 >= vid.width)
+		x1 = vid.width - 1;
 
 	angle = (currentplane->viewangle + currentplane->plangle)>>ANGLETOFINESHIFT;
 	planecos = FINECOSINE(angle);
@@ -179,15 +166,19 @@ void R_MapPlane(INT32 y, INT32 x1, INT32 x2)
 	if (planeheight != cachedheight[y])
 	{
 		cachedheight[y] = planeheight;
-		distance = cacheddistance[y] = FixedMul(planeheight, yslope[y]);
-		ds_xstep = cachedxstep[y] = FixedMul(distance, basexscale);
-		ds_ystep = cachedystep[y] = FixedMul(distance, baseyscale);
+		cacheddistance[y] = distance = FixedMul(planeheight, yslope[y]);
+		span = abs(centery - y);
 
-		if ((span = abs(centery-y)))
+		if (span) // Don't divide by zero
 		{
-			ds_xstep = cachedxstep[y] = FixedMul(planesin, planeheight) / span;
-			ds_ystep = cachedystep[y] = FixedMul(planecos, planeheight) / span;
+			ds_xstep = FixedMul(planesin, planeheight) / span;
+			ds_ystep = FixedMul(planecos, planeheight) / span;
 		}
+		else
+			ds_xstep = ds_ystep = FRACUNIT;
+
+		cachedxstep[y] = ds_xstep;
+		cachedystep[y] = ds_ystep;
 	}
 	else
 	{
@@ -196,47 +187,36 @@ void R_MapPlane(INT32 y, INT32 x1, INT32 x2)
 		ds_ystep = cachedystep[y];
 	}
 
+	// [RH] Instead of using the xtoviewangle array, I calculated the fractional values
+	// at the middle of the screen, then used the calculated ds_xstep and ds_ystep
+	// to step from those to the proper texture coordinate to start drawing at.
+	// That way, the texture coordinate is always calculated by its position
+	// on the screen and not by its position relative to the edge of the visplane.
 	ds_xfrac = xoffs + FixedMul(planecos, distance) + (x1 - centerx) * ds_xstep;
 	ds_yfrac = yoffs - FixedMul(planesin, distance) + (x1 - centerx) * ds_ystep;
 
-#ifndef NOWATER
-	if (itswater)
+	// Water ripple effect
+	if (planeripple.active)
 	{
-		// Needed for ds_bgofs
-		R_PlaneRipple(currentplane, y, planeheight);
+		ds_bgofs = R_CalculateRippleOffset(y);
 
-#ifdef ESLOPE
-		if (currentplane->slope)
-		{
-			ds_sup = &ds_su[y];
-			ds_svp = &ds_sv[y];
-			ds_szp = &ds_sz[y];
-		}
-		else
-#endif
-		{
-			ds_xfrac += ripple_xfrac;
-			ds_yfrac += ripple_yfrac;
-		}
+		R_CalculatePlaneRipple(currentplane->viewangle + currentplane->plangle);
 
-		if (y+ds_bgofs>=viewheight)
+		ds_xfrac += planeripple.xfrac;
+		ds_yfrac += planeripple.yfrac;
+		ds_bgofs >>= FRACBITS;
+
+		if ((y + ds_bgofs) >= viewheight)
 			ds_bgofs = viewheight-y-1;
-		if (y+ds_bgofs<0)
+		if ((y + ds_bgofs) < 0)
 			ds_bgofs = -y;
 	}
-#endif
 
 	pindex = distance >> LIGHTZSHIFT;
 	if (pindex >= MAXLIGHTZ)
 		pindex = MAXLIGHTZ - 1;
 
-#ifdef ESLOPE
-	if (currentplane->slope)
-		ds_colormap = colormaps;
-	else
-#endif
 	ds_colormap = planezlight[pindex];
-
 	if (currentplane->extra_colormap)
 		ds_colormap = currentplane->extra_colormap->colormap + (ds_colormap - colormaps);
 
@@ -244,19 +224,101 @@ void R_MapPlane(INT32 y, INT32 x1, INT32 x2)
 	ds_x1 = x1;
 	ds_x2 = x2;
 
-	// profile drawer
-#ifdef TIMING
-	ProfZeroTimer();
+	spanfunc();
+}
+
+static void R_MapTiltedPlane(INT32 y, INT32 x1, INT32 x2)
+{
+#ifdef RANGECHECK
+	if (x2 < x1 || x1 < 0 || x2 >= viewwidth || y > viewheight)
+		I_Error("R_MapTiltedPlane: %d, %d at %d", x1, x2, y);
 #endif
+
+	if (x1 >= vid.width)
+		x1 = vid.width - 1;
+
+	// Water ripple effect
+	if (planeripple.active)
+	{
+		ds_bgofs = R_CalculateRippleOffset(y);
+
+		ds_sup = &ds_su[y];
+		ds_svp = &ds_sv[y];
+		ds_szp = &ds_sz[y];
+
+		ds_bgofs >>= FRACBITS;
+
+		if ((y + ds_bgofs) >= viewheight)
+			ds_bgofs = viewheight-y-1;
+		if ((y + ds_bgofs) < 0)
+			ds_bgofs = -y;
+	}
+
+	if (currentplane->extra_colormap)
+		ds_colormap = currentplane->extra_colormap->colormap;
+	else
+		ds_colormap = colormaps;
+
+	ds_y = y;
+	ds_x1 = x1;
+	ds_x2 = x2;
 
 	spanfunc();
+}
 
-#ifdef TIMING
-	RDMSR(0x10, &mycount);
-	mytotal += mycount; // 64bit add
-	if (!(nombre--))
-	I_Error("spanfunc() CPU Spy reports: 0x%d %d\n", *((INT32 *)&mytotal+1), (INT32)mytotal);
+static void R_MapFogPlane(INT32 y, INT32 x1, INT32 x2)
+{
+	fixed_t distance;
+	size_t pindex;
+
+#ifdef RANGECHECK
+	if (x2 < x1 || x1 < 0 || x2 >= viewwidth || y > viewheight)
+		I_Error("R_MapFogPlane: %d, %d at %d", x1, x2, y);
 #endif
+
+	if (x1 >= vid.width)
+		x1 = vid.width - 1;
+
+	if (planeheight != cachedheight[y])
+		distance = FixedMul(planeheight, yslope[y]);
+	else
+		distance = cacheddistance[y];
+
+	pindex = distance >> LIGHTZSHIFT;
+	if (pindex >= MAXLIGHTZ)
+		pindex = MAXLIGHTZ - 1;
+
+	ds_colormap = planezlight[pindex];
+	if (currentplane->extra_colormap)
+		ds_colormap = currentplane->extra_colormap->colormap + (ds_colormap - colormaps);
+
+	ds_y = y;
+	ds_x1 = x1;
+	ds_x2 = x2;
+
+	spanfunc();
+}
+
+static void R_MapTiltedFogPlane(INT32 y, INT32 x1, INT32 x2)
+{
+#ifdef RANGECHECK
+	if (x2 < x1 || x1 < 0 || x2 >= viewwidth || y > viewheight)
+		I_Error("R_MapTiltedFogPlane: %d, %d at %d", x1, x2, y);
+#endif
+
+	if (x1 >= vid.width)
+		x1 = vid.width - 1;
+
+	if (currentplane->extra_colormap)
+		ds_colormap = currentplane->extra_colormap->colormap;
+	else
+		ds_colormap = colormaps;
+
+	ds_y = y;
+	ds_x1 = x1;
+	ds_x2 = x2;
+
+	spanfunc();
 }
 
 void R_ClearFFloorClips (void)
@@ -283,7 +345,6 @@ void R_ClearFFloorClips (void)
 void R_ClearPlanes(void)
 {
 	INT32 i, p;
-	angle_t angle;
 
 	// opening / clipping determination
 	for (i = 0; i < viewwidth; i++)
@@ -309,13 +370,6 @@ void R_ClearPlanes(void)
 
 	// texture calculation
 	memset(cachedheight, 0, sizeof (cachedheight));
-
-	// left to right mapping
-	angle = (viewangle-ANGLE_90)>>ANGLETOFINESHIFT;
-
-	// scale will be unit scale at SCREENWIDTH/2 distance
-	basexscale = FixedDiv (FINECOSINE(angle),centerxfrac);
-	baseyscale = -FixedDiv (FINESINE(angle),centerxfrac);
 }
 
 static visplane_t *new_visplane(unsigned hash)
@@ -323,7 +377,7 @@ static visplane_t *new_visplane(unsigned hash)
 	visplane_t *check = freetail;
 	if (!check)
 	{
-		check = calloc(2, sizeof (*check));
+		check = malloc(sizeof (*check));
 		if (check == NULL) I_Error("%s: Out of memory", "new_visplane"); // FIXME: ugly
 	}
 	else
@@ -344,43 +398,35 @@ static visplane_t *new_visplane(unsigned hash)
 //
 visplane_t *R_FindPlane(fixed_t height, INT32 picnum, INT32 lightlevel,
 	fixed_t xoff, fixed_t yoff, angle_t plangle, extracolormap_t *planecolormap,
-	ffloor_t *pfloor
-#ifdef POLYOBJECTS_PLANES
-			, polyobj_t *polyobj
-#endif
-#ifdef ESLOPE
-			, pslope_t *slope
-#endif
-			)
+	ffloor_t *pfloor, polyobj_t *polyobj, pslope_t *slope)
 {
 	visplane_t *check;
 	unsigned hash;
 
-#ifdef ESLOPE
-	if (slope); else // Don't mess with this right now if a slope is involved
-#endif
+	if (!slope) // Don't mess with this right now if a slope is involved
 	{
 		xoff += viewx;
 		yoff -= viewy;
 		if (plangle != 0)
 		{
 			// Add the view offset, rotated by the plane angle.
-			fixed_t cosinecomponent = FINECOSINE(plangle>>ANGLETOFINESHIFT);
-			fixed_t sinecomponent = FINESINE(plangle>>ANGLETOFINESHIFT);
-			fixed_t oldxoff = xoff;
-			xoff = FixedMul(xoff,cosinecomponent)+FixedMul(yoff,sinecomponent);
-			yoff = -FixedMul(oldxoff,sinecomponent)+FixedMul(yoff,cosinecomponent);
+			float ang = ANG2RAD(plangle);
+			float x = FixedToFloat(xoff);
+			float y = FixedToFloat(yoff);
+			xoff = FloatToFixed(x * cos(ang) + y * sin(ang));
+			yoff = FloatToFixed(-x * sin(ang) + y * cos(ang));
 		}
 	}
 
-#ifdef POLYOBJECTS_PLANES
 	if (polyobj)
 	{
 		if (polyobj->angle != 0)
 		{
-			angle_t fineshift = polyobj->angle >> ANGLETOFINESHIFT;
-			xoff -= FixedMul(FINECOSINE(fineshift), polyobj->centerPt.x)+FixedMul(FINESINE(fineshift), polyobj->centerPt.y);
-			yoff -= FixedMul(FINESINE(fineshift), polyobj->centerPt.x)-FixedMul(FINECOSINE(fineshift), polyobj->centerPt.y);
+			float ang = ANG2RAD(polyobj->angle);
+			float x = FixedToFloat(polyobj->centerPt.x);
+			float y = FixedToFloat(polyobj->centerPt.y);
+			xoff -= FloatToFixed(x * cos(ang) + y * sin(ang));
+			yoff -= FloatToFixed(x * sin(ang) - y * cos(ang));
 		}
 		else
 		{
@@ -388,7 +434,6 @@ visplane_t *R_FindPlane(fixed_t height, INT32 picnum, INT32 lightlevel,
 			yoff += polyobj->centerPt.y;
 		}
 	}
-#endif
 
 	// This appears to fix the Nimbus Ruins sky bug.
 	if (picnum == skyflatnum && pfloor)
@@ -397,32 +442,29 @@ visplane_t *R_FindPlane(fixed_t height, INT32 picnum, INT32 lightlevel,
 		lightlevel = 0;
 	}
 
-	// New visplane algorithm uses hash table
-	hash = visplane_hash(picnum, lightlevel, height);
-
-	for (check = visplanes[hash]; check; check = check->next)
+	if (!pfloor)
 	{
-#ifdef POLYOBJECTS_PLANES
-		if (check->polyobj && pfloor)
-			continue;
-		if (polyobj != check->polyobj)
-			continue;
-#endif
-		if (height == check->height && picnum == check->picnum
-			&& lightlevel == check->lightlevel
-			&& xoff == check->xoffs && yoff == check->yoffs
-			&& planecolormap == check->extra_colormap
-			&& !pfloor && !check->ffloor
-			&& check->viewx == viewx && check->viewy == viewy && check->viewz == viewz
-			&& check->viewangle == viewangle
-			&& check->plangle == plangle
-#ifdef ESLOPE
-			&& check->slope == slope
-#endif
-			)
+		hash = visplane_hash(picnum, lightlevel, height);
+		for (check = visplanes[hash]; check; check = check->next)
 		{
-			return check;
+			if (polyobj != check->polyobj)
+				continue;
+			if (height == check->height && picnum == check->picnum
+				&& lightlevel == check->lightlevel
+				&& xoff == check->xoffs && yoff == check->yoffs
+				&& planecolormap == check->extra_colormap
+				&& check->viewx == viewx && check->viewy == viewy && check->viewz == viewz
+				&& check->viewangle == viewangle
+				&& check->plangle == plangle
+				&& check->slope == slope)
+			{
+				return check;
+			}
 		}
+	}
+	else
+	{
+		hash = MAXVISPLANES - 1;
 	}
 
 	check = new_visplane(hash);
@@ -441,12 +483,8 @@ visplane_t *R_FindPlane(fixed_t height, INT32 picnum, INT32 lightlevel,
 	check->viewz = viewz;
 	check->viewangle = viewangle;
 	check->plangle = plangle;
-#ifdef POLYOBJECTS_PLANES
 	check->polyobj = polyobj;
-#endif
-#ifdef ESLOPE
 	check->slope = slope;
-#endif
 
 	memset(check->top, 0xff, sizeof (check->top));
 	memset(check->bottom, 0x00, sizeof (check->bottom));
@@ -497,9 +535,17 @@ visplane_t *R_CheckPlane(visplane_t *pl, INT32 start, INT32 stop)
 	}
 	else /* Cannot use existing plane; create a new one */
 	{
-		unsigned hash =
-			visplane_hash(pl->picnum, pl->lightlevel, pl->height);
-		visplane_t *new_pl = new_visplane(hash);
+		visplane_t *new_pl;
+		if (pl->ffloor)
+		{
+			new_pl = new_visplane(MAXVISPLANES - 1);
+		}
+		else
+		{
+			unsigned hash =
+				visplane_hash(pl->picnum, pl->lightlevel, pl->height);
+			new_pl = new_visplane(hash);
+		}
 
 		new_pl->height = pl->height;
 		new_pl->picnum = pl->picnum;
@@ -513,12 +559,8 @@ visplane_t *R_CheckPlane(visplane_t *pl, INT32 start, INT32 stop)
 		new_pl->viewz = pl->viewz;
 		new_pl->viewangle = pl->viewangle;
 		new_pl->plangle = pl->plangle;
-#ifdef POLYOBJECTS_PLANES
 		new_pl->polyobj = pl->polyobj;
-#endif
-#ifdef ESLOPE
 		new_pl->slope = pl->slope;
-#endif
 		pl = new_pl;
 		pl->minx = start;
 		pl->maxx = stop;
@@ -532,60 +574,24 @@ visplane_t *R_CheckPlane(visplane_t *pl, INT32 start, INT32 stop)
 //
 // R_ExpandPlane
 //
-// This function basically expands the visplane or I_Errors.
+// This function basically expands the visplane.
 // The reason for this is that when creating 3D floor planes, there is no
 // need to create new ones with R_CheckPlane, because 3D floor planes
 // are created by subsector and there is no way a subsector can graphically
 // overlap.
 void R_ExpandPlane(visplane_t *pl, INT32 start, INT32 stop)
 {
-//	INT32 unionl, unionh;
-//	INT32 x;
-
-#ifdef POLYOBJECTS_PLANES
 	// Don't expand polyobject planes here - we do that on our own.
 	if (pl->polyobj)
 		return;
-#endif
 
 	if (pl->minx > start) pl->minx = start;
 	if (pl->maxx < stop)  pl->maxx = stop;
-/*
-	if (start < pl->minx)
-	{
-		unionl = start;
-	}
-	else
-	{
-		unionl = pl->minx;
-	}
-
-	if (stop > pl->maxx)
-	{
-		unionh = stop;
-	}
-	else
-	{
-		unionh = pl->maxx;
-	}
-	for (x = start; x <= stop; x++)
-		if (pl->top[x] != 0xffff || pl->bottom[x] != 0x0000)
-			break;
-
-	if (x <= stop)
-		I_Error("R_ExpandPlane: planes in same subsector overlap?!\nminx: %d, maxx: %d, start: %d, stop: %d\n", pl->minx, pl->maxx, start, stop);
-
-	pl->minx = unionl, pl->maxx = unionh;
-*/
-
 }
 
-//
-// R_MakeSpans
-//
-void R_MakeSpans(INT32 x, INT32 t1, INT32 b1, INT32 t2, INT32 b2)
+static void R_MakeSpans(void (*mapfunc)(INT32, INT32, INT32), INT32 x, INT32 t1, INT32 b1, INT32 t2, INT32 b2)
 {
-	//    Alam: from r_splats's R_RenderFloorSplat
+	//    Alam: from r_splats's R_RasterizeFloorSplat
 	if (t1 >= vid.height) t1 = vid.height-1;
 	if (b1 >= vid.height) b1 = vid.height-1;
 	if (t2 >= vid.height) t2 = vid.height-1;
@@ -594,12 +600,12 @@ void R_MakeSpans(INT32 x, INT32 t1, INT32 b1, INT32 t2, INT32 b2)
 
 	while (t1 < t2 && t1 <= b1)
 	{
-		R_MapPlane(t1, spanstart[t1], x - 1);
+		mapfunc(t1, spanstart[t1], x - 1);
 		t1++;
 	}
 	while (b1 > b2 && b1 >= t1)
 	{
-		R_MapPlane(b1, spanstart[b1], x - 1);
+		mapfunc(b1, spanstart[b1], x - 1);
 		b1--;
 	}
 
@@ -614,28 +620,18 @@ void R_DrawPlanes(void)
 	visplane_t *pl;
 	INT32 i;
 
-	// Note: are these two lines really needed?
-	// R_DrawSinglePlane and R_DrawSkyPlane do span/column drawer resets themselves anyway
-	spanfunc = spanfuncs[BASEDRAWFUNC];
+	R_UpdatePlaneRipple();
 
 	for (i = 0; i < MAXVISPLANES; i++, pl++)
 	{
 		for (pl = visplanes[i]; pl; pl = pl->next)
 		{
-			if (pl->ffloor != NULL
-#ifdef POLYOBJECTS_PLANES
-			|| pl->polyobj != NULL
-#endif
-			)
+			if (pl->ffloor != NULL || pl->polyobj != NULL)
 				continue;
 
 			R_DrawSinglePlane(pl);
 		}
 	}
-#ifndef NOWATER
-	ds_waterofs = (leveltime & 1)*16384;
-	wtofs = leveltime * 140;
-#endif
 }
 
 // R_DrawSkyPlane
@@ -681,291 +677,188 @@ static void R_DrawSkyPlane(visplane_t *pl)
 	}
 }
 
-//
-// R_CheckPowersOfTwo
-//
-// Self-explanatory?
-//
-boolean R_CheckPowersOfTwo(void)
+// Returns the height of the sloped plane at (x, y) as a 32.16 fixed_t
+static INT64 R_GetSlopeZAt(const pslope_t *slope, fixed_t x, fixed_t y)
 {
-	boolean wpow2 = (!(ds_flatwidth & (ds_flatwidth - 1)));
-	boolean hpow2 = (!(ds_flatheight & (ds_flatheight - 1)));
+	INT64 x64 = ((INT64)x - (INT64)slope->o.x);
+	INT64 y64 = ((INT64)y - (INT64)slope->o.y);
 
-	// Initially, the flat isn't powers-of-two-sized.
-	ds_powersoftwo = false;
+	x64 = (x64 * (INT64)slope->d.x) / FRACUNIT;
+	y64 = (y64 * (INT64)slope->d.y) / FRACUNIT;
 
-	// But if the width and height are powers of two,
-	// and are EQUAL, then it's okay :]
-	if ((ds_flatwidth == ds_flatheight) && (wpow2 && hpow2))
-		ds_powersoftwo = true;
-
-	// Just return ds_powersoftwo.
-	return ds_powersoftwo;
+	return (INT64)slope->o.z + ((x64 + y64) * (INT64)slope->zdelta) / FRACUNIT;
 }
 
-//
-// R_CheckFlatLength
-//
-// Determine the flat's dimensions from the lump length.
-//
-void R_CheckFlatLength(size_t size)
+// Sets the texture origin vector of the sloped plane.
+static void R_SetSlopePlaneOrigin(pslope_t *slope, fixed_t xpos, fixed_t ypos, fixed_t zpos, fixed_t xoff, fixed_t yoff, fixed_t angle)
 {
-	switch (size)
-	{
-		case 4194304: // 2048x2048 lump
-			nflatmask = 0x3FF800;
-			nflatxshift = 21;
-			nflatyshift = 10;
-			nflatshiftup = 5;
-			ds_flatwidth = ds_flatheight = 2048;
-			break;
-		case 1048576: // 1024x1024 lump
-			nflatmask = 0xFFC00;
-			nflatxshift = 22;
-			nflatyshift = 12;
-			nflatshiftup = 6;
-			ds_flatwidth = ds_flatheight = 1024;
-			break;
-		case 262144:// 512x512 lump
-			nflatmask = 0x3FE00;
-			nflatxshift = 23;
-			nflatyshift = 14;
-			nflatshiftup = 7;
-			ds_flatwidth = ds_flatheight = 512;
-			break;
-		case 65536: // 256x256 lump
-			nflatmask = 0xFF00;
-			nflatxshift = 24;
-			nflatyshift = 16;
-			nflatshiftup = 8;
-			ds_flatwidth = ds_flatheight = 256;
-			break;
-		case 16384: // 128x128 lump
-			nflatmask = 0x3F80;
-			nflatxshift = 25;
-			nflatyshift = 18;
-			nflatshiftup = 9;
-			ds_flatwidth = ds_flatheight = 128;
-			break;
-		case 1024: // 32x32 lump
-			nflatmask = 0x3E0;
-			nflatxshift = 27;
-			nflatyshift = 22;
-			nflatshiftup = 11;
-			ds_flatwidth = ds_flatheight = 32;
-			break;
-		default: // 64x64 lump
-			nflatmask = 0xFC0;
-			nflatxshift = 26;
-			nflatyshift = 20;
-			nflatshiftup = 10;
-			ds_flatwidth = ds_flatheight = 64;
-			break;
-	}
-}
+	floatv3_t *p = &ds_slope_origin;
 
-//
-// R_GenerateFlat
-//
-// Generate a flat from specified width and height.
-//
-static UINT8 *R_GenerateFlat(UINT16 width, UINT16 height)
-{
-	UINT8 *flat = Z_Malloc(width * height, PU_LEVEL, NULL);
-	memset(flat, TRANSPARENTPIXEL, width * height);
-	return flat;
-}
+	INT64 vx = (INT64)xpos + (INT64)xoff;
+	INT64 vy = (INT64)ypos - (INT64)yoff;
 
-//
-// R_GetTextureFlat
-//
-// Convert a texture or patch to a flat.
-//
-static UINT8 *R_GetTextureFlat(levelflat_t *levelflat, boolean leveltexture, boolean ispng)
-{
-	UINT8 *flat;
-	textureflat_t *texflat = &texflats[levelflat->u.texture.num];
-	patch_t *patch = NULL;
-	boolean texturechanged = (leveltexture ? (levelflat->u.texture.num != levelflat->u.texture.lastnum) : false);
-
-	(void)ispng;
-
-	// Check if the texture changed.
-	if (leveltexture && (!texturechanged))
-	{
-		if (texflat != NULL && texflat->flat)
-		{
-			flat = texflat->flat;
-			ds_flatwidth = texflat->width;
-			ds_flatheight = texflat->height;
-			texturechanged = false;
-		}
-		else
-			texturechanged = true;
-	}
-
-	// If the texture changed, or the patch doesn't exist, convert either of them to a flat.
-	if (levelflat->flatpatch == NULL || texturechanged)
-	{
-		// Level texture
-		if (leveltexture)
-		{
-			texture_t *texture = textures[levelflat->u.texture.num];
-			texflat->width = ds_flatwidth = texture->width;
-			texflat->height = ds_flatheight = texture->height;
-
-			texflat->flat = R_GenerateFlat(ds_flatwidth, ds_flatheight);
-			R_TextureToFlat(levelflat->u.texture.num, texflat->flat);
-			flat = texflat->flat;
-
-			levelflat->flatpatch = flat;
-			levelflat->width = ds_flatwidth;
-			levelflat->height = ds_flatheight;
-		}
-		// Patch (never happens yet)
-		else
-		{
-			patch = (patch_t *)ds_source;
-#ifndef NO_PNG_LUMPS
-			if (ispng)
-			{
-				levelflat->flatpatch = R_PNGToFlat(&levelflat->width, &levelflat->height, ds_source, W_LumpLength(levelflat->u.flat.lumpnum));
-				levelflat->topoffset = levelflat->leftoffset = 0;
-				ds_flatwidth = levelflat->width;
-				ds_flatheight = levelflat->height;
-			}
-			else
-#endif
-			{
-				levelflat->width = ds_flatwidth = SHORT(patch->width);
-				levelflat->height = ds_flatheight = SHORT(patch->height);
-
-				levelflat->topoffset = patch->topoffset * FRACUNIT;
-				levelflat->leftoffset = patch->leftoffset * FRACUNIT;
-
-				levelflat->flatpatch = R_GenerateFlat(ds_flatwidth, ds_flatheight);
-				R_PatchToFlat(patch, levelflat->flatpatch);
-			}
-			flat = levelflat->flatpatch;
-		}
-	}
-	else
-	{
-		flat = levelflat->flatpatch;
-		ds_flatwidth = levelflat->width;
-		ds_flatheight = levelflat->height;
-	}
-
-	xoffs += levelflat->leftoffset;
-	yoffs += levelflat->topoffset;
-
-	levelflat->u.texture.lastnum = levelflat->u.texture.num;
-	return flat;
-}
-
-#ifdef ESLOPE
-static void R_SlopeVectors(visplane_t *pl, INT32 i, float fudge)
-{
-	// Potentially override other stuff for now cus we're mean. :< But draw a slope plane!
-	// I copied ZDoom's code and adapted it to SRB2... -Red
-	floatv3_t p, m, n;
-	float ang;
-	float vx, vy, vz;
-	// compiler complains when P_GetZAt is used in FLOAT_TO_FIXED directly
-	// use this as a temp var to store P_GetZAt's return value each time
-	fixed_t temp;
-
-	vx = FIXED_TO_FLOAT(pl->viewx+xoffs);
-	vy = FIXED_TO_FLOAT(pl->viewy-yoffs);
-	vz = FIXED_TO_FLOAT(pl->viewz);
-
-	temp = P_GetZAt(pl->slope, pl->viewx, pl->viewy);
-	zeroheight = FIXED_TO_FLOAT(temp);
+	float vxf = vx / (float)FRACUNIT;
+	float vyf = vy / (float)FRACUNIT;
+	float ang = ANG2RAD(ANGLE_270 - angle);
 
 	// p is the texture origin in view space
 	// Don't add in the offsets at this stage, because doing so can result in
 	// errors if the flat is rotated.
-	ang = ANG2RAD(ANGLE_270 - pl->viewangle);
-	p.x = vx * cos(ang) - vy * sin(ang);
-	p.z = vx * sin(ang) + vy * cos(ang);
-	temp = P_GetZAt(pl->slope, -xoffs, yoffs);
-	p.y = FIXED_TO_FLOAT(temp) - vz;
+	p->x = vxf * cos(ang) - vyf * sin(ang);
+	p->z = vxf * sin(ang) + vyf * cos(ang);
+	p->y = (R_GetSlopeZAt(slope, -xoff, yoff) - zpos) / (float)FRACUNIT;
+}
+
+// This function calculates all of the vectors necessary for drawing a sloped plane.
+void R_SetSlopePlane(pslope_t *slope, fixed_t xpos, fixed_t ypos, fixed_t zpos, fixed_t xoff, fixed_t yoff, angle_t angle, angle_t plangle)
+{
+	// Potentially override other stuff for now cus we're mean. :< But draw a slope plane!
+	// I copied ZDoom's code and adapted it to SRB2... -Red
+	floatv3_t *m = &ds_slope_v, *n = &ds_slope_u;
+	fixed_t height, temp;
+	float ang;
+
+	R_SetSlopePlaneOrigin(slope, xpos, ypos, zpos, xoff, yoff, angle);
+	height = P_GetSlopeZAt(slope, xpos, ypos);
+	zeroheight = FixedToFloat(height - zpos);
 
 	// m is the v direction vector in view space
-	ang = ANG2RAD(ANGLE_180 - (pl->viewangle + pl->plangle));
-	m.x = cos(ang);
-	m.z = sin(ang);
+	ang = ANG2RAD(ANGLE_180 - (angle + plangle));
+	m->x = cos(ang);
+	m->z = sin(ang);
 
 	// n is the u direction vector in view space
-	n.x = sin(ang);
-	n.z = -cos(ang);
+	n->x = sin(ang);
+	n->z = -cos(ang);
 
-	ang = ANG2RAD(pl->plangle);
-	temp = P_GetZAt(pl->slope, pl->viewx + FLOAT_TO_FIXED(sin(ang)), pl->viewy + FLOAT_TO_FIXED(cos(ang)));
-	m.y = FIXED_TO_FLOAT(temp) - zeroheight;
-	temp = P_GetZAt(pl->slope, pl->viewx + FLOAT_TO_FIXED(cos(ang)), pl->viewy - FLOAT_TO_FIXED(sin(ang)));
-	n.y = FIXED_TO_FLOAT(temp) - zeroheight;
+	plangle >>= ANGLETOFINESHIFT;
+	temp = P_GetSlopeZAt(slope, xpos + FINESINE(plangle), ypos + FINECOSINE(plangle));
+	m->y = FixedToFloat(temp - height);
+	temp = P_GetSlopeZAt(slope, xpos + FINECOSINE(plangle), ypos - FINESINE(plangle));
+	n->y = FixedToFloat(temp - height);
+}
 
-	if (ds_powersoftwo)
-	{
-		m.x /= fudge;
-		m.y /= fudge;
-		m.z /= fudge;
+// This function calculates all of the vectors necessary for drawing a sloped and scaled plane.
+void R_SetScaledSlopePlane(pslope_t *slope, fixed_t xpos, fixed_t ypos, fixed_t zpos, fixed_t xs, fixed_t ys, fixed_t xoff, fixed_t yoff, angle_t angle, angle_t plangle)
+{
+	floatv3_t *m = &ds_slope_v, *n = &ds_slope_u;
+	fixed_t height, temp;
 
-		n.x *= fudge;
-		n.y *= fudge;
-		n.z *= fudge;
-	}
+	float xscale = FixedToFloat(xs);
+	float yscale = FixedToFloat(ys);
+	float ang;
+
+	R_SetSlopePlaneOrigin(slope, xpos, ypos, zpos, xoff, yoff, angle);
+	height = P_GetSlopeZAt(slope, xpos, ypos);
+	zeroheight = FixedToFloat(height - zpos);
+
+	// m is the v direction vector in view space
+	ang = ANG2RAD(ANGLE_180 - (angle + plangle));
+	m->x = yscale * cos(ang);
+	m->z = yscale * sin(ang);
+
+	// n is the u direction vector in view space
+	n->x = xscale * sin(ang);
+	n->z = -xscale * cos(ang);
+
+	ang = ANG2RAD(plangle);
+	temp = P_GetSlopeZAt(slope, xpos + FloatToFixed(yscale * sin(ang)), ypos + FloatToFixed(yscale * cos(ang)));
+	m->y = FixedToFloat(temp - height);
+	temp = P_GetSlopeZAt(slope, xpos + FloatToFixed(xscale * cos(ang)), ypos - FloatToFixed(xscale * sin(ang)));
+	n->y = FixedToFloat(temp - height);
+}
+
+void R_CalculateSlopeVectors(void)
+{
+	float sfmult = 65536.f;
 
 	// Eh. I tried making this stuff fixed-point and it exploded on me. Here's a macro for the only floating-point vector function I recall using.
 #define CROSS(d, v1, v2) \
-d.x = (v1.y * v2.z) - (v1.z * v2.y);\
-d.y = (v1.z * v2.x) - (v1.x * v2.z);\
-d.z = (v1.x * v2.y) - (v1.y * v2.x)
-	CROSS(ds_su[i], p, m);
-	CROSS(ds_sv[i], p, n);
-	CROSS(ds_sz[i], m, n);
+d->x = (v1.y * v2.z) - (v1.z * v2.y);\
+d->y = (v1.z * v2.x) - (v1.x * v2.z);\
+d->z = (v1.x * v2.y) - (v1.y * v2.x)
+	CROSS(ds_sup, ds_slope_origin, ds_slope_v);
+	CROSS(ds_svp, ds_slope_origin, ds_slope_u);
+	CROSS(ds_szp, ds_slope_v, ds_slope_u);
 #undef CROSS
 
-	ds_su[i].z *= focallengthf;
-	ds_sv[i].z *= focallengthf;
-	ds_sz[i].z *= focallengthf;
+	ds_sup->z *= focallengthf;
+	ds_svp->z *= focallengthf;
+	ds_szp->z *= focallengthf;
+
+	if (ds_solidcolor)
+		return;
 
 	// Premultiply the texture vectors with the scale factors
-#define SFMULT 65536.f
 	if (ds_powersoftwo)
-	{
-		ds_su[i].x *= (SFMULT * (1<<nflatshiftup));
-		ds_su[i].y *= (SFMULT * (1<<nflatshiftup));
-		ds_su[i].z *= (SFMULT * (1<<nflatshiftup));
-		ds_sv[i].x *= (SFMULT * (1<<nflatshiftup));
-		ds_sv[i].y *= (SFMULT * (1<<nflatshiftup));
-		ds_sv[i].z *= (SFMULT * (1<<nflatshiftup));
-	}
-	else
-	{
-		// Lactozilla: I'm essentially multiplying the vectors by FRACUNIT...
-		ds_su[i].x *= SFMULT;
-		ds_su[i].y *= SFMULT;
-		ds_su[i].z *= SFMULT;
-		ds_sv[i].x *= SFMULT;
-		ds_sv[i].y *= SFMULT;
-		ds_sv[i].z *= SFMULT;
-	}
-#undef SFMULT
+		sfmult *= (1 << nflatshiftup);
+
+	ds_sup->x *= sfmult;
+	ds_sup->y *= sfmult;
+	ds_sup->z *= sfmult;
+	ds_svp->x *= sfmult;
+	ds_svp->y *= sfmult;
+	ds_svp->z *= sfmult;
 }
-#endif // ESLOPE
+
+void R_SetTiltedSpan(INT32 span)
+{
+	if (ds_su == NULL)
+		ds_su = Z_Malloc(sizeof(*ds_su) * vid.height, PU_STATIC, NULL);
+	if (ds_sv == NULL)
+		ds_sv = Z_Malloc(sizeof(*ds_sv) * vid.height, PU_STATIC, NULL);
+	if (ds_sz == NULL)
+		ds_sz = Z_Malloc(sizeof(*ds_sz) * vid.height, PU_STATIC, NULL);
+
+	ds_sup = &ds_su[span];
+	ds_svp = &ds_sv[span];
+	ds_szp = &ds_sz[span];
+}
+
+static void R_SetSlopePlaneVectors(visplane_t *pl, INT32 y, fixed_t xoff, fixed_t yoff)
+{
+	R_SetTiltedSpan(y);
+	R_SetSlopePlane(pl->slope, pl->viewx, pl->viewy, pl->viewz, xoff, yoff, pl->viewangle, pl->plangle);
+	R_CalculateSlopeVectors();
+}
+
+static inline void R_AdjustSlopeCoordinates(vector3_t *origin)
+{
+	const fixed_t modmask = ((1 << (32-nflatshiftup)) - 1);
+
+	fixed_t ox = (origin->x & modmask);
+	fixed_t oy = -(origin->y & modmask);
+
+	xoffs &= modmask;
+	yoffs &= modmask;
+
+	xoffs -= (origin->x - ox);
+	yoffs += (origin->y + oy);
+}
+
+static inline void R_AdjustSlopeCoordinatesNPO2(vector3_t *origin)
+{
+	const fixed_t modmaskw = (ds_flatwidth << FRACBITS);
+	const fixed_t modmaskh = (ds_flatheight << FRACBITS);
+
+	fixed_t ox = (origin->x % modmaskw);
+	fixed_t oy = -(origin->y % modmaskh);
+
+	xoffs %= modmaskw;
+	yoffs %= modmaskh;
+
+	xoffs -= (origin->x - ox);
+	yoffs += (origin->y + oy);
+}
 
 void R_DrawSinglePlane(visplane_t *pl)
 {
-	UINT8 *flat;
 	INT32 light = 0;
-	INT32 x;
-	INT32 stop, angle;
+	INT32 x, stop;
 	ffloor_t *rover;
-	levelflat_t *levelflat;
-	int type;
-	int spanfunctype = BASEDRAWFUNC;
+	boolean fog = false;
+	INT32 spanfunctype = BASEDRAWFUNC;
+	void (*mapfunc)(INT32, INT32, INT32);
 
 	if (!(pl->minx <= pl->maxx))
 		return;
@@ -977,181 +870,170 @@ void R_DrawSinglePlane(visplane_t *pl)
 		return;
 	}
 
-#ifndef NOWATER
-	itswater = false;
-#endif
-	spanfunc = spanfuncs[BASEDRAWFUNC];
+	planeripple.active = false;
 
-#ifdef POLYOBJECTS_PLANES
-	if (pl->polyobj && pl->polyobj->translucency != 0)
+	if (pl->polyobj)
 	{
-		spanfunctype = SPANDRAWFUNC_TRANS;
-
 		// Hacked up support for alpha value in software mode Tails 09-24-2002 (sidenote: ported to polys 10-15-2014, there was no time travel involved -Red)
 		if (pl->polyobj->translucency >= 10)
 			return; // Don't even draw it
 		else if (pl->polyobj->translucency > 0)
-			ds_transmap = transtables + ((pl->polyobj->translucency-1)<<FF_TRANSSHIFT);
-		else // Opaque, but allow transparent flat pixels
+		{
+			spanfunctype = (pl->polyobj->flags & POF_SPLAT) ? SPANDRAWFUNC_TRANSSPLAT : SPANDRAWFUNC_TRANS;
+			ds_transmap = R_GetTranslucencyTable(pl->polyobj->translucency);
+		}
+		else if (pl->polyobj->flags & POF_SPLAT) // Opaque, but allow transparent flat pixels
 			spanfunctype = SPANDRAWFUNC_SPLAT;
 
-#ifdef SHITPLANESPARENCY
-		if ((spanfunctype == SPANDRAWFUNC_SPLAT) != (pl->extra_colormap && (pl->extra_colormap->fog & 4)))
-#else
-		if (!pl->extra_colormap || !(pl->extra_colormap->fog & 2))
-#endif
+		if (pl->polyobj->translucency == 0 || (pl->extra_colormap && (pl->extra_colormap->flags & CMF_FOG)))
 			light = (pl->lightlevel >> LIGHTSEGSHIFT);
 		else
 			light = LIGHTLEVELS-1;
-
-	} else
-#endif
-	if (pl->ffloor)
+	}
+	else
 	{
-		// Don't draw planes that shouldn't be drawn.
-		for (rover = pl->ffloor->target->ffloors; rover; rover = rover->next)
+		if (pl->ffloor)
 		{
-			if ((pl->ffloor->flags & FF_CUTEXTRA) && (rover->flags & FF_EXTRA))
+			// Don't draw planes that shouldn't be drawn.
+			for (rover = pl->ffloor->target->ffloors; rover; rover = rover->next)
 			{
-				if (pl->ffloor->flags & FF_EXTRA)
+				if ((pl->ffloor->fofflags & FOF_CUTEXTRA) && (rover->fofflags & FOF_EXTRA))
 				{
-					// The plane is from an extra 3D floor... Check the flags so
-					// there are no undesired cuts.
-					if (((pl->ffloor->flags & (FF_FOG|FF_SWIMMABLE)) == (rover->flags & (FF_FOG|FF_SWIMMABLE)))
-						&& pl->height < *rover->topheight
-						&& pl->height > *rover->bottomheight)
-						return;
+					if (pl->ffloor->fofflags & FOF_EXTRA)
+					{
+						// The plane is from an extra 3D floor... Check the flags so
+						// there are no undesired cuts.
+						if (((pl->ffloor->fofflags & (FOF_FOG|FOF_SWIMMABLE)) == (rover->fofflags & (FOF_FOG|FOF_SWIMMABLE)))
+							&& pl->height < *rover->topheight
+							&& pl->height > *rover->bottomheight)
+							return;
+					}
+				}
+			}
+
+			if (pl->ffloor->fofflags & FOF_TRANSLUCENT)
+			{
+				spanfunctype = (pl->ffloor->fofflags & FOF_SPLAT) ? SPANDRAWFUNC_TRANSSPLAT : SPANDRAWFUNC_TRANS;
+
+				// Hacked up support for alpha value in software mode Tails 09-24-2002
+				// ...unhacked by toaster 04-01-2021, re-hacked a little by sphere 19-11-2021
+				{
+					INT32 trans = (10*((256+12) - pl->ffloor->alpha))/255;
+					if (trans >= 10)
+						return; // Don't even draw it
+					if (pl->ffloor->blend) // additive, (reverse) subtractive, modulative
+						ds_transmap = R_GetBlendTable(pl->ffloor->blend, trans);
+					else if (!(ds_transmap = R_GetTranslucencyTable(trans)) || trans == 0)
+						spanfunctype = SPANDRAWFUNC_SPLAT; // Opaque, but allow transparent flat pixels
+				}
+
+				if ((spanfunctype == SPANDRAWFUNC_SPLAT) || (pl->extra_colormap && (pl->extra_colormap->flags & CMF_FOG)))
+					light = (pl->lightlevel >> LIGHTSEGSHIFT);
+				else
+					light = LIGHTLEVELS-1;
+			}
+			else if (pl->ffloor->fofflags & FOF_FOG)
+			{
+				fog = true;
+				spanfunctype = SPANDRAWFUNC_FOG;
+				light = (pl->lightlevel >> LIGHTSEGSHIFT);
+			}
+			else light = (pl->lightlevel >> LIGHTSEGSHIFT);
+
+			if (pl->ffloor->fofflags & FOF_RIPPLE && !fog)
+			{
+				planeripple.active = true;
+
+				if (spanfunctype == SPANDRAWFUNC_TRANS)
+				{
+					// Copy the current scene, ugh
+					INT32 top = pl->high-8;
+					INT32 bottom = pl->low+8;
+
+					if (top < 0)
+						top = 0;
+					if (bottom > vid.height)
+						bottom = vid.height;
+
+					spanfunctype = SPANDRAWFUNC_WATER;
+
+					// Only copy the part of the screen we need
+					VID_BlitLinearScreen((splitscreen && viewplayer == &players[secondarydisplayplayer]) ? screens[0] + (top+(vid.height>>1))*vid.width : screens[0]+((top)*vid.width), screens[1]+((top)*vid.width),
+										 vid.width, bottom-top,
+										 vid.width, vid.width);
 				}
 			}
 		}
-
-		if (pl->ffloor->flags & FF_TRANSLUCENT)
-		{
-			spanfunctype = SPANDRAWFUNC_TRANS;
-
-			// Hacked up support for alpha value in software mode Tails 09-24-2002
-			if (pl->ffloor->alpha < 12)
-				return; // Don't even draw it
-			else if (pl->ffloor->alpha < 38)
-				ds_transmap = transtables + ((tr_trans90-1)<<FF_TRANSSHIFT);
-			else if (pl->ffloor->alpha < 64)
-				ds_transmap = transtables + ((tr_trans80-1)<<FF_TRANSSHIFT);
-			else if (pl->ffloor->alpha < 89)
-				ds_transmap = transtables + ((tr_trans70-1)<<FF_TRANSSHIFT);
-			else if (pl->ffloor->alpha < 115)
-				ds_transmap = transtables + ((tr_trans60-1)<<FF_TRANSSHIFT);
-			else if (pl->ffloor->alpha < 140)
-				ds_transmap = transtables + ((tr_trans50-1)<<FF_TRANSSHIFT);
-			else if (pl->ffloor->alpha < 166)
-				ds_transmap = transtables + ((tr_trans40-1)<<FF_TRANSSHIFT);
-			else if (pl->ffloor->alpha < 192)
-				ds_transmap = transtables + ((tr_trans30-1)<<FF_TRANSSHIFT);
-			else if (pl->ffloor->alpha < 217)
-				ds_transmap = transtables + ((tr_trans20-1)<<FF_TRANSSHIFT);
-			else if (pl->ffloor->alpha < 243)
-				ds_transmap = transtables + ((tr_trans10-1)<<FF_TRANSSHIFT);
-			else // Opaque, but allow transparent flat pixels
-				spanfunctype = SPANDRAWFUNC_SPLAT;
-
-#ifdef SHITPLANESPARENCY
-			if ((spanfunctype == SPANDRAWFUNC_SPLAT) != (pl->extra_colormap && (pl->extra_colormap->fog & 4)))
-#else
-			if (!pl->extra_colormap || !(pl->extra_colormap->fog & 2))
-#endif
-				light = (pl->lightlevel >> LIGHTSEGSHIFT);
-			else
-				light = LIGHTLEVELS-1;
-		}
-		else if (pl->ffloor->flags & FF_FOG)
-		{
-			spanfunctype = SPANDRAWFUNC_FOG;
+		else
 			light = (pl->lightlevel >> LIGHTSEGSHIFT);
-		}
-		else light = (pl->lightlevel >> LIGHTSEGSHIFT);
+	}
 
-#ifndef NOWATER
-		if (pl->ffloor->flags & FF_RIPPLE)
+	ds_powersoftwo = ds_solidcolor = false;
+
+	if (fog)
+	{
+		// Since all fog planes do is apply a colormap, it's not required
+		// to know any information about their textures.
+		mapfunc = R_MapFogPlane;
+	}
+	else
+	{
+		levelflat_t *levelflat = &levelflats[pl->picnum];
+
+		/* :james: */
+		switch (levelflat->type)
 		{
-			INT32 top, bottom;
+			case LEVELFLAT_NONE:
+				return;
+			case LEVELFLAT_FLAT:
+				ds_source = (UINT8 *)R_GetFlat(levelflat->u.flat.lumpnum);
+				R_SetFlatVars(W_LumpLength(levelflat->u.flat.lumpnum));
+				if (R_CheckSolidColorFlat())
+					ds_solidcolor = true;
+				else
+					ds_powersoftwo = true;
+				break;
+			default:
+				ds_source = (UINT8 *)R_GetLevelFlat(levelflat);
+				if (!ds_source)
+					return;
+				else if (R_CheckSolidColorFlat())
+					ds_solidcolor = true;
+				else if (R_CheckPowersOfTwo())
+				{
+					R_SetFlatVars(ds_flatwidth * ds_flatheight);
+					ds_powersoftwo = true;
+				}
+		}
 
-			itswater = true;
-			if (spanfunctype == SPANDRAWFUNC_TRANS)
+		// Don't mess with angle on slopes! We'll handle this ourselves later
+		if (!pl->slope && viewangle != pl->viewangle+pl->plangle)
+		{
+			memset(cachedheight, 0, sizeof (cachedheight));
+			viewangle = pl->viewangle+pl->plangle;
+		}
+
+		mapfunc = R_MapPlane;
+
+		if (ds_solidcolor)
+		{
+			switch (spanfunctype)
 			{
-				spanfunctype = SPANDRAWFUNC_WATER;
-
-				// Copy the current scene, ugh
-				top = pl->high-8;
-				bottom = pl->low+8;
-
-				if (top < 0)
-					top = 0;
-				if (bottom > vid.height)
-					bottom = vid.height;
-
-				// Only copy the part of the screen we need
-				VID_BlitLinearScreen((splitscreen && viewplayer == &players[secondarydisplayplayer]) ? screens[0] + (top+(vid.height>>1))*vid.width : screens[0]+((top)*vid.width), screens[1]+((top)*vid.width),
-				                     vid.width, bottom-top,
-				                     vid.width, vid.width);
+				case SPANDRAWFUNC_WATER:
+					spanfunctype = SPANDRAWFUNC_WATERSOLID;
+					break;
+				case SPANDRAWFUNC_TRANS:
+					spanfunctype = SPANDRAWFUNC_TRANSSOLID;
+					break;
+				default:
+					spanfunctype = SPANDRAWFUNC_SOLID;
+					break;
 			}
 		}
-#endif
-	}
-	else light = (pl->lightlevel >> LIGHTSEGSHIFT);
-
-#ifdef ESLOPE
-	if (!pl->slope) // Don't mess with angle on slopes! We'll handle this ourselves later
-#endif
-	if (viewangle != pl->viewangle+pl->plangle)
-	{
-		memset(cachedheight, 0, sizeof (cachedheight));
-		angle = (pl->viewangle+pl->plangle-ANGLE_90)>>ANGLETOFINESHIFT;
-		basexscale = FixedDiv(FINECOSINE(angle),centerxfrac);
-		baseyscale = -FixedDiv(FINESINE(angle),centerxfrac);
-		viewangle = pl->viewangle+pl->plangle;
 	}
 
 	xoffs = pl->xoffs;
 	yoffs = pl->yoffs;
-	planeheight = abs(pl->height - pl->viewz);
-
-	currentplane = pl;
-	levelflat = &levelflats[pl->picnum];
-
-	/* :james: */
-	type = levelflat->type;
-	switch (type)
-	{
-		case LEVELFLAT_NONE:
-			return;
-		case LEVELFLAT_FLAT:
-			ds_source = W_CacheLumpNum(levelflat->u.flat.lumpnum, PU_CACHE);
-			R_CheckFlatLength(W_LumpLength(levelflat->u.flat.lumpnum));
-			// Raw flats always have dimensions that are powers-of-two numbers.
-			ds_powersoftwo = true;
-			break;
-		default:
-			switch (type)
-			{
-				case LEVELFLAT_TEXTURE:
-					/* Textures get cached differently and don't need ds_source */
-					ds_source = R_GetTextureFlat(levelflat, true, false);
-					break;
-				default:
-					ds_source = W_CacheLumpNum(levelflat->u.flat.lumpnum, PU_STATIC);
-					flat      = R_GetTextureFlat(levelflat, false,
-#ifndef NO_PNG_LUMPS
-							( type == LEVELFLAT_PNG )
-#else
-							false
-#endif
-					);
-					Z_ChangeTag(ds_source, PU_CACHE);
-					ds_source = flat;
-			}
-			// Check if this texture or patch has power-of-two dimensions.
-			if (R_CheckPowersOfTwo())
-				R_CheckFlatLength(ds_flatwidth * ds_flatheight);
-	}
 
 	if (light >= LIGHTLEVELS)
 		light = LIGHTLEVELS-1;
@@ -1159,112 +1041,76 @@ void R_DrawSinglePlane(visplane_t *pl)
 	if (light < 0)
 		light = 0;
 
-#ifdef ESLOPE
 	if (pl->slope)
 	{
-		float fudgecanyon = 0;
-		angle_t hack = (pl->plangle & (ANGLE_90-1));
-
-		yoffs *= 1;
-
-		if (ds_powersoftwo)
+		if (fog)
+			mapfunc = R_MapTiltedFogPlane;
+		else
 		{
-			fixed_t temp;
-			// Okay, look, don't ask me why this works, but without this setup there's a disgusting-looking misalignment with the textures. -Red
-			fudgecanyon = ((1<<nflatshiftup)+1.0f)/(1<<nflatshiftup);
-			if (hack)
+			mapfunc = R_MapTiltedPlane;
+
+			if (!pl->plangle && !ds_solidcolor)
 			{
-				/*
-				Essentially: We can't & the components along the regular axes when the plane is rotated.
-				This is because the distance on each regular axis in order to loop is different.
-				We rotate them, & the components, add them together, & them again, and then rotate them back.
-				These three seperate & operations are done per axis in order to prevent overflows.
-				toast 10/04/17
-				*/
-				const fixed_t cosinecomponent = FINECOSINE(hack>>ANGLETOFINESHIFT);
-				const fixed_t sinecomponent = FINESINE(hack>>ANGLETOFINESHIFT);
-
-				const fixed_t modmask = ((1 << (32-nflatshiftup)) - 1);
-
-				fixed_t ox = (FixedMul(pl->slope->o.x,cosinecomponent) & modmask) - (FixedMul(pl->slope->o.y,sinecomponent) & modmask);
-				fixed_t oy = (-FixedMul(pl->slope->o.x,sinecomponent) & modmask) - (FixedMul(pl->slope->o.y,cosinecomponent) & modmask);
-
-				temp = ox & modmask;
-				oy &= modmask;
-				ox = FixedMul(temp,cosinecomponent)+FixedMul(oy,-sinecomponent); // negative sine for opposite direction
-				oy = -FixedMul(temp,-sinecomponent)+FixedMul(oy,cosinecomponent);
-
-				temp = xoffs;
-				xoffs = (FixedMul(temp,cosinecomponent) & modmask) + (FixedMul(yoffs,sinecomponent) & modmask);
-				yoffs = (-FixedMul(temp,sinecomponent) & modmask) + (FixedMul(yoffs,cosinecomponent) & modmask);
-
-				temp = xoffs & modmask;
-				yoffs &= modmask;
-				xoffs = FixedMul(temp,cosinecomponent)+FixedMul(yoffs,-sinecomponent); // ditto
-				yoffs = -FixedMul(temp,-sinecomponent)+FixedMul(yoffs,cosinecomponent);
-
-				xoffs -= (pl->slope->o.x - ox);
-				yoffs += (pl->slope->o.y + oy);
+				if (ds_powersoftwo)
+					R_AdjustSlopeCoordinates(&pl->slope->o);
+				else
+					R_AdjustSlopeCoordinatesNPO2(&pl->slope->o);
 			}
-			else
-			{
-				xoffs &= ((1 << (32-nflatshiftup))-1);
-				yoffs &= ((1 << (32-nflatshiftup))-1);
-				xoffs -= (pl->slope->o.x + (1 << (31-nflatshiftup))) & ~((1 << (32-nflatshiftup))-1);
-				yoffs += (pl->slope->o.y + (1 << (31-nflatshiftup))) & ~((1 << (32-nflatshiftup))-1);
-			}
-			xoffs = (fixed_t)(xoffs*fudgecanyon);
-			yoffs = (fixed_t)(yoffs/fudgecanyon);
 		}
 
-		ds_sup = &ds_su[0];
-		ds_svp = &ds_sv[0];
-		ds_szp = &ds_sz[0];
-
-#ifndef NOWATER
-		if (itswater)
+		if (planeripple.active)
 		{
-			INT32 i;
-			fixed_t plheight = abs(P_GetZAt(pl->slope, pl->viewx, pl->viewy) - pl->viewz);
-			fixed_t rxoffs = xoffs;
-			fixed_t ryoffs = yoffs;
+			planeheight = abs(P_GetSlopeZAt(pl->slope, pl->viewx, pl->viewy) - pl->viewz);
 
 			R_PlaneBounds(pl);
 
-			for (i = pl->high; i < pl->low; i++)
+			for (x = pl->high; x < pl->low; x++)
 			{
-				R_PlaneRipple(pl, i, plheight);
-				xoffs = rxoffs + ripple_xfrac;
-				yoffs = ryoffs + ripple_yfrac;
-				R_SlopeVectors(pl, i, fudgecanyon);
+				ds_bgofs = R_CalculateRippleOffset(x);
+				R_CalculatePlaneRipple(pl->viewangle + pl->plangle);
+				R_SetSlopePlaneVectors(pl, x, (xoffs + planeripple.xfrac), (yoffs + planeripple.yfrac));
 			}
-
-			xoffs = rxoffs;
-			yoffs = ryoffs;
 		}
 		else
-#endif
-			R_SlopeVectors(pl, 0, fudgecanyon);
+			R_SetSlopePlaneVectors(pl, 0, xoffs, yoffs);
 
-#ifndef NOWATER
-		if (itswater && (spanfunctype == SPANDRAWFUNC_WATER))
-			spanfunctype = SPANDRAWFUNC_TILTEDWATER;
-		else
-#endif
-		if (spanfunctype == SPANDRAWFUNC_TRANS)
-			spanfunctype = SPANDRAWFUNC_TILTEDTRANS;
-		else if (spanfunctype == SPANDRAWFUNC_SPLAT)
-			spanfunctype = SPANDRAWFUNC_TILTEDSPLAT;
-		else
-			spanfunctype = SPANDRAWFUNC_TILTED;
+		switch (spanfunctype)
+		{
+			case SPANDRAWFUNC_WATER:
+				spanfunctype = SPANDRAWFUNC_TILTEDWATER;
+				break;
+			case SPANDRAWFUNC_TRANS:
+				spanfunctype = SPANDRAWFUNC_TILTEDTRANS;
+				break;
+			case SPANDRAWFUNC_SPLAT:
+				spanfunctype = SPANDRAWFUNC_TILTEDSPLAT;
+				break;
+			case SPANDRAWFUNC_SOLID:
+				spanfunctype = SPANDRAWFUNC_TILTEDSOLID;
+				break;
+			case SPANDRAWFUNC_TRANSSOLID:
+				spanfunctype = SPANDRAWFUNC_TILTEDTRANSSOLID;
+				break;
+			case SPANDRAWFUNC_WATERSOLID:
+				spanfunctype = SPANDRAWFUNC_TILTEDWATERSOLID;
+				break;
+			case SPANDRAWFUNC_FOG:
+				spanfunctype = SPANDRAWFUNC_TILTEDFOG;
+				break;
+			default:
+				spanfunctype = SPANDRAWFUNC_TILTED;
+				break;
+		}
 
 		planezlight = scalelight[light];
-	} else
-#endif // ESLOPE
+	}
+	else
+	{
+		planeheight = abs(pl->height - pl->viewz);
+		planezlight = zlight[light];
+	}
 
-	planezlight = zlight[light];
-
-	// Use the correct span drawer depending on the powers-of-twoness
+	// Set the span drawer
 	if (!ds_powersoftwo)
 	{
 		if (spanfuncs_npo2[spanfunctype])
@@ -1281,92 +1127,11 @@ void R_DrawSinglePlane(visplane_t *pl)
 	pl->bottom[pl->maxx+1] = 0x0000;
 	pl->bottom[pl->minx-1] = 0x0000;
 
+	currentplane = pl;
 	stop = pl->maxx + 1;
 
-	if (viewx != pl->viewx || viewy != pl->viewy)
-	{
-		viewx = pl->viewx;
-		viewy = pl->viewy;
-	}
-	if (viewz != pl->viewz)
-		viewz = pl->viewz;
-
 	for (x = pl->minx; x <= stop; x++)
-	{
-		R_MakeSpans(x, pl->top[x-1], pl->bottom[x-1],
-			pl->top[x], pl->bottom[x]);
-	}
-
-/*
-QUINCUNX anti-aliasing technique (sort of)
-
-Normally, Quincunx antialiasing staggers pixels
-in a 5-die pattern like so:
-
-o   o
-  o
-o   o
-
-To simulate this, we offset the plane by
-FRACUNIT/4 in each direction, and draw
-at 50% translucency. The result is
-a 'smoothing' of the texture while
-using the palette colors.
-*/
-#ifdef QUINCUNX
-	if (spanfunc == spanfuncs[BASEDRAWFUNC])
-	{
-		INT32 i;
-		ds_transmap = transtables + ((tr_trans50-1)<<FF_TRANSSHIFT);
-		spanfunc = spanfuncs[SPANDRAWFUNC_TRANS];
-		for (i=0; i<4; i++)
-		{
-			xoffs = pl->xoffs;
-			yoffs = pl->yoffs;
-
-			switch(i)
-			{
-				case 0:
-					xoffs -= FRACUNIT/4;
-					yoffs -= FRACUNIT/4;
-					break;
-				case 1:
-					xoffs -= FRACUNIT/4;
-					yoffs += FRACUNIT/4;
-					break;
-				case 2:
-					xoffs += FRACUNIT/4;
-					yoffs -= FRACUNIT/4;
-					break;
-				case 3:
-					xoffs += FRACUNIT/4;
-					yoffs += FRACUNIT/4;
-					break;
-			}
-			planeheight = abs(pl->height - pl->viewz);
-
-			if (light >= LIGHTLEVELS)
-				light = LIGHTLEVELS-1;
-
-			if (light < 0)
-				light = 0;
-
-			planezlight = zlight[light];
-
-			// set the maximum value for unsigned
-			pl->top[pl->maxx+1] = 0xffff;
-			pl->top[pl->minx-1] = 0xffff;
-			pl->bottom[pl->maxx+1] = 0x0000;
-			pl->bottom[pl->minx-1] = 0x0000;
-
-			stop = pl->maxx + 1;
-
-			for (x = pl->minx; x <= stop; x++)
-				R_MakeSpans(x, pl->top[x-1], pl->bottom[x-1],
-					pl->top[x], pl->bottom[x]);
-		}
-	}
-#endif
+		R_MakeSpans(mapfunc, x, pl->top[x-1], pl->bottom[x-1], pl->top[x], pl->bottom[x]);
 }
 
 void R_PlaneBounds(visplane_t *plane)

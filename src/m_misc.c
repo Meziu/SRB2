@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2019 by Sonic Team Junior.
+// Copyright (C) 1999-2023 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -36,6 +36,7 @@
 #include "v_video.h"
 #include "z_zone.h"
 #include "g_input.h"
+#include "i_time.h"
 #include "i_video.h"
 #include "d_main.h"
 #include "m_argv.h"
@@ -64,8 +65,6 @@ typedef off_t off64_t;
 #define PRIdS "u"
 #elif defined (_WIN32)
 #define PRIdS "Iu"
-#elif defined (DJGPP)
-#define PRIdS "u"
 #else
 #define PRIdS "zu"
 #endif
@@ -102,16 +101,16 @@ typedef off_t off64_t;
 #endif
 
 static CV_PossibleValue_t screenshot_cons_t[] = {{0, "Default"}, {1, "HOME"}, {2, "SRB2"}, {3, "CUSTOM"}, {0, NULL}};
-consvar_t cv_screenshot_option = {"screenshot_option", "Default", CV_SAVE|CV_CALL, screenshot_cons_t, Screenshot_option_Onchange, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_screenshot_folder = {"screenshot_folder", "", CV_SAVE, NULL, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_screenshot_option = CVAR_INIT ("screenshot_option", "Default", CV_SAVE|CV_CALL, screenshot_cons_t, Screenshot_option_Onchange);
+consvar_t cv_screenshot_folder = CVAR_INIT ("screenshot_folder", "", CV_SAVE, NULL, NULL);
 
-consvar_t cv_screenshot_colorprofile = {"screenshot_colorprofile", "Yes", CV_SAVE, CV_YesNo, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_screenshot_colorprofile = CVAR_INIT ("screenshot_colorprofile", "Yes", CV_SAVE, CV_YesNo, NULL);
 
 static CV_PossibleValue_t moviemode_cons_t[] = {{MM_GIF, "GIF"}, {MM_APNG, "aPNG"}, {MM_SCREENSHOT, "Screenshots"}, {0, NULL}};
-consvar_t cv_moviemode = {"moviemode_mode", "GIF", CV_SAVE|CV_CALL, moviemode_cons_t, Moviemode_mode_Onchange, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_moviemode = CVAR_INIT ("moviemode_mode", "GIF", CV_SAVE|CV_CALL, moviemode_cons_t, Moviemode_mode_Onchange);
 
-consvar_t cv_movie_option = {"movie_option", "Default", CV_SAVE|CV_CALL, screenshot_cons_t, Moviemode_option_Onchange, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_movie_folder = {"movie_folder", "", CV_SAVE, NULL, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_movie_option = CVAR_INIT ("movie_option", "Default", CV_SAVE|CV_CALL, screenshot_cons_t, Moviemode_option_Onchange);
+consvar_t cv_movie_folder = CVAR_INIT ("movie_folder", "", CV_SAVE, NULL, NULL);
 
 static CV_PossibleValue_t zlib_mem_level_t[] = {
 	{1, "(Min Memory) 1"},
@@ -153,16 +152,21 @@ static CV_PossibleValue_t apng_delay_t[] = {
 
 // zlib memory usage is as follows:
 // (1 << (zlib_window_bits+2)) +  (1 << (zlib_level+9))
-consvar_t cv_zlib_memory = {"png_memory_level", "7", CV_SAVE, zlib_mem_level_t, NULL, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_zlib_level = {"png_compress_level", "(Optimal) 6", CV_SAVE, zlib_level_t, NULL, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_zlib_strategy = {"png_strategy", "Normal", CV_SAVE, zlib_strategy_t, NULL, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_zlib_window_bits = {"png_window_size", "32k", CV_SAVE, zlib_window_bits_t, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_zlib_memory = CVAR_INIT ("png_memory_level", "7", CV_SAVE, zlib_mem_level_t, NULL);
+consvar_t cv_zlib_level = CVAR_INIT ("png_compress_level", "(Optimal) 6", CV_SAVE, zlib_level_t, NULL);
+consvar_t cv_zlib_strategy = CVAR_INIT ("png_strategy", "Normal", CV_SAVE, zlib_strategy_t, NULL);
+consvar_t cv_zlib_window_bits = CVAR_INIT ("png_window_size", "32k", CV_SAVE, zlib_window_bits_t, NULL);
 
-consvar_t cv_zlib_memorya = {"apng_memory_level", "(Max Memory) 9", CV_SAVE, zlib_mem_level_t, NULL, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_zlib_levela = {"apng_compress_level", "4", CV_SAVE, zlib_level_t, NULL, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_zlib_strategya = {"apng_strategy", "RLE", CV_SAVE, zlib_strategy_t, NULL, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_zlib_window_bitsa = {"apng_window_size", "32k", CV_SAVE, zlib_window_bits_t, NULL, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_apng_delay = {"apng_speed", "1/2x", CV_SAVE, apng_delay_t, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_zlib_memorya = CVAR_INIT ("apng_memory_level", "(Max Memory) 9", CV_SAVE, zlib_mem_level_t, NULL);
+consvar_t cv_zlib_levela = CVAR_INIT ("apng_compress_level", "4", CV_SAVE, zlib_level_t, NULL);
+consvar_t cv_zlib_strategya = CVAR_INIT ("apng_strategy", "RLE", CV_SAVE, zlib_strategy_t, NULL);
+consvar_t cv_zlib_window_bitsa = CVAR_INIT ("apng_window_size", "32k", CV_SAVE, zlib_window_bits_t, NULL);
+consvar_t cv_apng_delay = CVAR_INIT ("apng_speed", "1x", CV_SAVE, apng_delay_t, NULL);
+consvar_t cv_apng_downscale = CVAR_INIT ("apng_downscale", "On", CV_SAVE, CV_OnOff, NULL);
+
+#ifdef USE_APNG
+static boolean apng_downscale = false; // So nobody can do something dumb like changing cvars mid output
+#endif
 
 boolean takescreenshot = false; // Take a screenshot this tic
 
@@ -270,8 +274,8 @@ size_t FIL_ReadFileTag(char const *name, UINT8 **buffer, INT32 tag)
 	size_t count, length;
 	UINT8 *buf;
 
-	if (FIL_ReadFileOK(name))
-		handle = fopen(name, "rb");
+	//if (FIL_ReadFileOK(name))
+		handle = fopenfile(name, "rb");
 
 	if (!handle)
 		return 0;
@@ -295,6 +299,44 @@ size_t FIL_ReadFileTag(char const *name, UINT8 **buffer, INT32 tag)
 
 	*buffer = buf;
 	return length;
+}
+
+/** Makes a copy of a text file with all newlines converted into LF newlines.
+  *
+  * \param textfilename The name of the source file
+  * \param binfilename The name of the destination file
+  */
+boolean FIL_ConvertTextFileToBinary(const char *textfilename, const char *binfilename)
+{
+	FILE *textfile;
+	FILE *binfile;
+	UINT8 buffer[1024];
+	size_t count;
+	boolean success;
+
+	textfile = fopen(textfilename, "r");
+	if (!textfile)
+		return false;
+
+	binfile = fopen(binfilename, "wb");
+	if (!binfile)
+	{
+		fclose(textfile);
+		return false;
+	}
+
+	do
+	{
+		count = fread(buffer, 1, sizeof(buffer), textfile);
+		fwrite(buffer, 1, count, binfile);
+	} while (count);
+
+	success = !(ferror(textfile) || ferror(binfile));
+
+	fclose(textfile);
+	fclose(binfile);
+
+	return success;
 }
 
 /** Check if the filename exists
@@ -426,6 +468,7 @@ void Command_SaveConfig_f(void)
 		CONS_Printf(M_GetText("saveconfig <filename[.cfg]> [-silent] : save config to a file\n"));
 		return;
 	}
+
 	strcpy(tmpstr, COM_Argv(1));
 	FIL_ForceExtension(tmpstr, ".cfg");
 
@@ -525,10 +568,13 @@ void M_FirstLoadConfig(void)
 	gameconfig_loaded = true;
 
 	// reset to default player stuff
-	COM_BufAddText (va("%s \"%s\"\n",cv_skin.name,cv_defaultskin.string));
-	COM_BufAddText (va("%s \"%s\"\n",cv_playercolor.name,cv_defaultplayercolor.string));
-	COM_BufAddText (va("%s \"%s\"\n",cv_skin2.name,cv_defaultskin2.string));
-	COM_BufAddText (va("%s \"%s\"\n",cv_playercolor2.name,cv_defaultplayercolor2.string));
+	if (!dedicated)
+	{
+		COM_BufAddText (va("%s \"%s\"\n",cv_skin.name,cv_defaultskin.string));
+		COM_BufAddText (va("%s \"%s\"\n",cv_playercolor.name,cv_defaultplayercolor.string));
+		COM_BufAddText (va("%s \"%s\"\n",cv_skin2.name,cv_defaultskin2.string));
+		COM_BufAddText (va("%s \"%s\"\n",cv_playercolor2.name,cv_defaultplayercolor2.string));
+	}
 }
 
 /** Saves the game configuration.
@@ -600,12 +646,12 @@ void M_SaveConfig(const char *filename)
 		CV_SetValue(&cv_usemouse, tutorialusemouse);
 		CV_SetValue(&cv_alwaysfreelook, tutorialfreelook);
 		CV_SetValue(&cv_mousemove, tutorialmousemove);
-		CV_SetValue(&cv_analog, tutorialanalog);
+		CV_SetValue(&cv_analog[0], tutorialanalog);
 		CV_SaveVariables(f);
 		CV_Set(&cv_usemouse, cv_usemouse.defaultvalue);
 		CV_Set(&cv_alwaysfreelook, cv_alwaysfreelook.defaultvalue);
 		CV_Set(&cv_mousemove, cv_mousemove.defaultvalue);
-		CV_Set(&cv_analog, cv_analog.defaultvalue);
+		CV_Set(&cv_analog[0], cv_analog[0].defaultvalue);
 	}
 	else
 		CV_SaveVariables(f);
@@ -755,8 +801,6 @@ static void M_PNGText(png_structp png_ptr, png_infop png_info_ptr, PNG_CONST png
 	 "SDL";
 #elif defined (_WINDOWS)
 	 "DirectX";
-#elif defined (PC_DOS)
-	 "Allegro";
 #else
 	 "Unknown";
 #endif
@@ -794,7 +838,7 @@ static void M_PNGText(png_structp png_ptr, png_infop png_info_ptr, PNG_CONST png
 	else
 		snprintf(lvlttltext, 48, "Unknown");
 
-	if (gamestate == GS_LEVEL && &players[displayplayer] && players[displayplayer].mo)
+	if (gamestate == GS_LEVEL && players[displayplayer].mo)
 		snprintf(locationtxt, 40, "X:%d Y:%d Z:%d A:%d",
 			players[displayplayer].mo->x>>FRACBITS,
 			players[displayplayer].mo->y>>FRACBITS,
@@ -945,25 +989,38 @@ static inline boolean M_PNGLib(void)
 
 static void M_PNGFrame(png_structp png_ptr, png_infop png_info_ptr, png_bytep png_buf)
 {
+	png_uint_16 downscale = apng_downscale ? vid.dupx : 1;
+
 	png_uint_32 pitch = png_get_rowbytes(png_ptr, png_info_ptr);
-	PNG_CONST png_uint_32 height = vid.height;
-	png_bytepp row_pointers = png_malloc(png_ptr, height* sizeof (png_bytep));
-	png_uint_32 y;
+	PNG_CONST png_uint_32 width = vid.width / downscale;
+	PNG_CONST png_uint_32 height = vid.height / downscale;
+	png_bytepp row_pointers = png_malloc(png_ptr, height * sizeof (png_bytep));
+	png_uint_32 x, y;
 	png_uint_16 framedelay = (png_uint_16)cv_apng_delay.value;
 
 	apng_frames++;
 
 	for (y = 0; y < height; y++)
 	{
-		row_pointers[y] = png_buf;
-		png_buf += pitch;
+		row_pointers[y] = malloc(pitch * sizeof(png_byte));
+		for (x = 0; x < width; x++)
+			row_pointers[y][x] = png_buf[x * downscale];
+		png_buf += pitch * (downscale * downscale);
 	}
+		//for (x = 0; x < width; x++)
+		//{
+		//	printf("%d", x);
+		//	row_pointers[y][x] = 0;
+		//}
+	/*	row_pointers[y] = calloc(1, sizeof(png_bytep));
+		png_buf += pitch * 2;
+	}*/
 
 #ifndef PNG_STATIC
 	if (aPNG_write_frame_head)
 #endif
 		aPNG_write_frame_head(apng_ptr, apng_info_ptr, row_pointers,
-			vid.width, /* width */
+			width,     /* width */
 			height,    /* height */
 			0,         /* x offset */
 			0,         /* y offset */
@@ -994,6 +1051,12 @@ static void M_PNGfix_acTL(png_structp png_ptr, png_infop png_info_ptr,
 
 static boolean M_SetupaPNG(png_const_charp filename, png_bytep pal)
 {
+	png_uint_16 downscale;
+
+	apng_downscale = (!!cv_apng_downscale.value);
+
+	downscale = apng_downscale ? vid.dupx : 1;
+
 	apng_FILE = fopen(filename,"wb+"); // + mode for reading
 	if (!apng_FILE)
 	{
@@ -1044,7 +1107,7 @@ static boolean M_SetupaPNG(png_const_charp filename, png_bytep pal)
 	png_set_compression_strategy(apng_ptr, cv_zlib_strategya.value);
 	png_set_compression_window_bits(apng_ptr, cv_zlib_window_bitsa.value);
 
-	M_PNGhdr(apng_ptr, apng_info_ptr, vid.width, vid.height, pal);
+	M_PNGhdr(apng_ptr, apng_info_ptr, vid.width / downscale, vid.height / downscale, pal);
 
 	M_PNGText(apng_ptr, apng_info_ptr, true);
 
@@ -1573,14 +1636,14 @@ boolean M_ScreenshotResponder(event_t *ev)
 	if (dedicated || ev->type != ev_keydown)
 		return false;
 
-	ch = ev->data1;
+	ch = ev->key;
 
 	if (ch >= KEY_MOUSE1 && menuactive) // If it's not a keyboard key, then don't allow it in the menus!
 		return false;
 
-	if (ch == KEY_F8 || ch == gamecontrol[gc_screenshot][0] || ch == gamecontrol[gc_screenshot][1]) // remappable F8
+	if (ch == KEY_F8 || ch == gamecontrol[GC_SCREENSHOT][0] || ch == gamecontrol[GC_SCREENSHOT][1]) // remappable F8
 		M_ScreenShot();
-	else if (ch == KEY_F9 || ch == gamecontrol[gc_recordgif][0] || ch == gamecontrol[gc_recordgif][1]) // remappable F9
+	else if (ch == KEY_F9 || ch == gamecontrol[GC_RECORDGIF][0] || ch == gamecontrol[GC_RECORDGIF][1]) // remappable F9
 		((moviemode) ? M_StopMovie : M_StartMovie)();
 	else
 		return false;
@@ -1783,7 +1846,7 @@ char *M_GetToken(const char *inputString)
 			|| stringToUse[startPos] == '\r'
 			|| stringToUse[startPos] == '\n'
 			|| stringToUse[startPos] == '\0'
-			|| stringToUse[startPos] == '"' // we're treating this as whitespace because SLADE likes adding it for no good reason
+			|| stringToUse[startPos] == '=' || stringToUse[startPos] == ';' // UDMF TEXTMAP.
 			|| inComment != 0)
 			&& startPos < stringLength)
 	{
@@ -1841,6 +1904,23 @@ char *M_GetToken(const char *inputString)
 		texturesToken[1] = '\0';
 		return texturesToken;
 	}
+	// Return entire string within quotes, except without the quotes.
+	else if (stringToUse[startPos] == '"')
+	{
+		endPos = ++startPos;
+		while (stringToUse[endPos] != '"' && endPos < stringLength)
+			endPos++;
+
+		texturesTokenLength = endPos++ - startPos;
+		// Assign the memory. Don't forget an extra byte for the end of the string!
+		texturesToken = (char *)Z_Malloc((texturesTokenLength+1)*sizeof(char),PU_STATIC,NULL);
+		// Copy the string.
+		M_Memcpy(texturesToken, stringToUse+startPos, (size_t)texturesTokenLength);
+		// Make the final character NUL.
+		texturesToken[texturesTokenLength] = '\0';
+
+		return texturesToken;
+	}
 
 	// Now find the end of the token. This includes several additional characters that are okay to capture as one character, but not trailing at the end of another token.
 	endPos = startPos + 1;
@@ -1851,7 +1931,7 @@ char *M_GetToken(const char *inputString)
 			&& stringToUse[endPos] != ','
 			&& stringToUse[endPos] != '{'
 			&& stringToUse[endPos] != '}'
-			&& stringToUse[endPos] != '"' // see above
+			&& stringToUse[endPos] != '=' && stringToUse[endPos] != ';' // UDMF TEXTMAP.
 			&& inComment == 0)
 			&& endPos < stringLength)
 	{
@@ -1895,6 +1975,170 @@ void M_UnGetToken(void)
 	endPos = oldendPos;
 }
 
+#define NUMTOKENS 2
+static const char *tokenizerInput = NULL;
+static UINT32 tokenCapacity[NUMTOKENS] = {0};
+static char *tokenizerToken[NUMTOKENS] = {NULL};
+static UINT32 tokenizerStartPos = 0;
+static UINT32 tokenizerEndPos = 0;
+static UINT32 tokenizerInputLength = 0;
+static UINT8 tokenizerInComment = 0; // 0 = not in comment, 1 = // Single-line, 2 = /* Multi-line */
+
+void M_TokenizerOpen(const char *inputString)
+{
+	size_t i;
+
+	tokenizerInput = inputString;
+	for (i = 0; i < NUMTOKENS; i++)
+	{
+		tokenCapacity[i] = 1024;
+		tokenizerToken[i] = (char*)Z_Malloc(tokenCapacity[i] * sizeof(char), PU_STATIC, NULL);
+	}
+	tokenizerInputLength = strlen(tokenizerInput);
+}
+
+void M_TokenizerClose(void)
+{
+	size_t i;
+
+	tokenizerInput = NULL;
+	for (i = 0; i < NUMTOKENS; i++)
+		Z_Free(tokenizerToken[i]);
+	tokenizerStartPos = 0;
+	tokenizerEndPos = 0;
+	tokenizerInComment = 0;
+}
+
+static void M_DetectComment(UINT32 *pos)
+{
+	if (tokenizerInComment)
+		return;
+
+	if (*pos >= tokenizerInputLength - 1)
+		return;
+
+	if (tokenizerInput[*pos] != '/')
+		return;
+
+	//Single-line comment start
+	if (tokenizerInput[*pos + 1] == '/')
+		tokenizerInComment = 1;
+	//Multi-line comment start
+	else if (tokenizerInput[*pos + 1] == '*')
+		tokenizerInComment = 2;
+}
+
+static void M_ReadTokenString(UINT32 i)
+{
+	UINT32 tokenLength = tokenizerEndPos - tokenizerStartPos;
+	if (tokenLength + 1 > tokenCapacity[i])
+	{
+		tokenCapacity[i] = tokenLength + 1;
+		// Assign the memory. Don't forget an extra byte for the end of the string!
+		tokenizerToken[i] = (char *)Z_Malloc(tokenCapacity[i] * sizeof(char), PU_STATIC, NULL);
+	}
+	// Copy the string.
+	M_Memcpy(tokenizerToken[i], tokenizerInput + tokenizerStartPos, (size_t)tokenLength);
+	// Make the final character NUL.
+	tokenizerToken[i][tokenLength] = '\0';
+}
+
+const char *M_TokenizerRead(UINT32 i)
+{
+	if (!tokenizerInput)
+		return NULL;
+
+	tokenizerStartPos = tokenizerEndPos;
+
+	// Try to detect comments now, in case we're pointing right at one
+	M_DetectComment(&tokenizerStartPos);
+
+	// Find the first non-whitespace char, or else the end of the string trying
+	while ((tokenizerInput[tokenizerStartPos] == ' '
+			|| tokenizerInput[tokenizerStartPos] == '\t'
+			|| tokenizerInput[tokenizerStartPos] == '\r'
+			|| tokenizerInput[tokenizerStartPos] == '\n'
+			|| tokenizerInput[tokenizerStartPos] == '\0'
+			|| tokenizerInput[tokenizerStartPos] == '=' || tokenizerInput[tokenizerStartPos] == ';' // UDMF TEXTMAP.
+			|| tokenizerInComment != 0)
+			&& tokenizerStartPos < tokenizerInputLength)
+	{
+		// Try to detect comment endings now
+		if (tokenizerInComment == 1	&& tokenizerInput[tokenizerStartPos] == '\n')
+			tokenizerInComment = 0; // End of line for a single-line comment
+		else if (tokenizerInComment == 2
+			&& tokenizerStartPos < tokenizerInputLength - 1
+			&& tokenizerInput[tokenizerStartPos] == '*'
+			&& tokenizerInput[tokenizerStartPos+1] == '/')
+		{
+			// End of multi-line comment
+			tokenizerInComment = 0;
+			tokenizerStartPos++; // Make damn well sure we're out of the comment ending at the end of it all
+		}
+
+		tokenizerStartPos++;
+		M_DetectComment(&tokenizerStartPos);
+	}
+
+	// If the end of the string is reached, no token is to be read
+	if (tokenizerStartPos == tokenizerInputLength) {
+		tokenizerEndPos = tokenizerInputLength;
+		return NULL;
+	}
+	// Else, if it's one of these three symbols, capture only this one character
+	else if (tokenizerInput[tokenizerStartPos] == ','
+			|| tokenizerInput[tokenizerStartPos] == '{'
+			|| tokenizerInput[tokenizerStartPos] == '}')
+	{
+		tokenizerEndPos = tokenizerStartPos + 1;
+		tokenizerToken[i][0] = tokenizerInput[tokenizerStartPos];
+		tokenizerToken[i][1] = '\0';
+		return tokenizerToken[i];
+	}
+	// Return entire string within quotes, except without the quotes.
+	else if (tokenizerInput[tokenizerStartPos] == '"')
+	{
+		tokenizerEndPos = ++tokenizerStartPos;
+		while (tokenizerInput[tokenizerEndPos] != '"' && tokenizerEndPos < tokenizerInputLength)
+			tokenizerEndPos++;
+
+		M_ReadTokenString(i);
+		tokenizerEndPos++;
+		return tokenizerToken[i];
+	}
+
+	// Now find the end of the token. This includes several additional characters that are okay to capture as one character, but not trailing at the end of another token.
+	tokenizerEndPos = tokenizerStartPos + 1;
+	while ((tokenizerInput[tokenizerEndPos] != ' '
+			&& tokenizerInput[tokenizerEndPos] != '\t'
+			&& tokenizerInput[tokenizerEndPos] != '\r'
+			&& tokenizerInput[tokenizerEndPos] != '\n'
+			&& tokenizerInput[tokenizerEndPos] != ','
+			&& tokenizerInput[tokenizerEndPos] != '{'
+			&& tokenizerInput[tokenizerEndPos] != '}'
+			&& tokenizerInput[tokenizerEndPos] != '=' && tokenizerInput[tokenizerEndPos] != ';' // UDMF TEXTMAP.
+			&& tokenizerInComment == 0)
+			&& tokenizerEndPos < tokenizerInputLength)
+	{
+		tokenizerEndPos++;
+		// Try to detect comment starts now; if it's in a comment, we don't want it in this token
+		M_DetectComment(&tokenizerEndPos);
+	}
+
+	M_ReadTokenString(i);
+	return tokenizerToken[i];
+}
+
+UINT32 M_TokenizerGetEndPos(void)
+{
+	return tokenizerEndPos;
+}
+
+void M_TokenizerSetEndPos(UINT32 newPos)
+{
+	tokenizerEndPos = newPos;
+}
+
 /** Count bits in a number.
   */
 UINT8 M_CountBits(UINT32 num, UINT8 size)
@@ -1920,63 +2164,6 @@ const char *GetRevisionString(void)
 	rev[7] = '\0';
 
 	return rev;
-}
-
-// Vector/matrix math
-TVector *VectorMatrixMultiply(TVector v, TMatrix m)
-{
-	static TVector ret;
-
-	ret[0] = FixedMul(v[0],m[0][0]) + FixedMul(v[1],m[1][0]) + FixedMul(v[2],m[2][0]) + FixedMul(v[3],m[3][0]);
-	ret[1] = FixedMul(v[0],m[0][1]) + FixedMul(v[1],m[1][1]) + FixedMul(v[2],m[2][1]) + FixedMul(v[3],m[3][1]);
-	ret[2] = FixedMul(v[0],m[0][2]) + FixedMul(v[1],m[1][2]) + FixedMul(v[2],m[2][2]) + FixedMul(v[3],m[3][2]);
-	ret[3] = FixedMul(v[0],m[0][3]) + FixedMul(v[1],m[1][3]) + FixedMul(v[2],m[2][3]) + FixedMul(v[3],m[3][3]);
-
-	return &ret;
-}
-
-TMatrix *RotateXMatrix(angle_t rad)
-{
-	static TMatrix ret;
-	const angle_t fa = rad>>ANGLETOFINESHIFT;
-	const fixed_t cosrad = FINECOSINE(fa), sinrad = FINESINE(fa);
-
-	ret[0][0] = FRACUNIT; ret[0][1] =       0; ret[0][2] = 0;        ret[0][3] = 0;
-	ret[1][0] =        0; ret[1][1] =  cosrad; ret[1][2] = sinrad;   ret[1][3] = 0;
-	ret[2][0] =        0; ret[2][1] = -sinrad; ret[2][2] = cosrad;   ret[2][3] = 0;
-	ret[3][0] =        0; ret[3][1] =       0; ret[3][2] = 0;        ret[3][3] = FRACUNIT;
-
-	return &ret;
-}
-
-#if 0
-TMatrix *RotateYMatrix(angle_t rad)
-{
-	static TMatrix ret;
-	const angle_t fa = rad>>ANGLETOFINESHIFT;
-	const fixed_t cosrad = FINECOSINE(fa), sinrad = FINESINE(fa);
-
-	ret[0][0] = cosrad;   ret[0][1] =        0; ret[0][2] = -sinrad;   ret[0][3] = 0;
-	ret[1][0] = 0;        ret[1][1] = FRACUNIT; ret[1][2] = 0;         ret[1][3] = 0;
-	ret[2][0] = sinrad;   ret[2][1] =        0; ret[2][2] = cosrad;    ret[2][3] = 0;
-	ret[3][0] = 0;        ret[3][1] =        0; ret[3][2] = 0;         ret[3][3] = FRACUNIT;
-
-	return &ret;
-}
-#endif
-
-TMatrix *RotateZMatrix(angle_t rad)
-{
-	static TMatrix ret;
-	const angle_t fa = rad>>ANGLETOFINESHIFT;
-	const fixed_t cosrad = FINECOSINE(fa), sinrad = FINESINE(fa);
-
-	ret[0][0] = cosrad;    ret[0][1] = sinrad;   ret[0][2] =        0; ret[0][3] = 0;
-	ret[1][0] = -sinrad;   ret[1][1] = cosrad;   ret[1][2] =        0; ret[1][3] = 0;
-	ret[2][0] = 0;         ret[2][1] = 0;        ret[2][2] = FRACUNIT; ret[2][3] = 0;
-	ret[3][0] = 0;         ret[3][1] = 0;        ret[3][2] =        0; ret[3][3] = FRACUNIT;
-
-	return &ret;
 }
 
 /** Set of functions to take in a size_t as an argument,
@@ -2543,4 +2730,78 @@ void M_MkdirEachUntil(const char *cpath, int start, int end, int mode)
 void M_MkdirEach(const char *path, int start, int mode)
 {
 	M_MkdirEachUntil(path, start, -1, mode);
+}
+
+int M_JumpWord(const char *line)
+{
+	int c;
+
+	c = line[0];
+
+	if (isspace(c))
+		return strspn(line, " ");
+	else if (ispunct(c))
+		return strspn(line, PUNCTUATION);
+	else
+	{
+		if (isspace(line[1]))
+			return 1 + strspn(&line[1], " ");
+		else
+			return strcspn(line, " "PUNCTUATION);
+	}
+}
+
+int M_JumpWordReverse(const char *line, int offset)
+{
+	int (*is)(int);
+	int c;
+	c = line[--offset];
+	if (isspace(c))
+		is = isspace;
+	else if (ispunct(c))
+		is = ispunct;
+	else
+		is = isalnum;
+	c = (*is)(line[offset]);
+	while (offset > 0 &&
+			(*is)(line[offset - 1]) == c)
+		offset--;
+	return offset;
+}
+
+const char * M_Ftrim (double f)
+{
+	static char dig[9];/* "0." + 6 digits (6 is printf's default) */
+	int i;
+	/* I know I said it's the default, but just in case... */
+	sprintf(dig, "%.6f", fabs(modf(f, &f)));
+	/* trim trailing zeroes */
+	for (i = strlen(dig)-1; dig[i] == '0'; --i)
+		;
+	if (dig[i] == '.')/* :NOTHING: */
+		return "";
+	else
+	{
+		dig[i + 1] = '\0';
+		return &dig[1];/* skip the 0 */
+	}
+}
+
+// Returns true if the string is empty.
+boolean M_IsStringEmpty(const char *s)
+{
+	const char *ch = s;
+
+	if (s == NULL || s[0] == '\0')
+		return true;
+
+	for (;;ch++)
+	{
+		if (!(*ch))
+			break;
+		if (!isspace((*ch)))
+			return false;
+	}
+
+	return true;
 }

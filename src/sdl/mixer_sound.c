@@ -1,6 +1,6 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
-// Copyright (C) 2014-2019 by Sonic Team Junior.
+// Copyright (C) 2014-2023 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -9,7 +9,7 @@
 /// \file
 /// \brief SDL Mixer interface for sound
 
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 #ifdef HAVE_ZLIB
 #ifndef _MSC_VER
 #ifndef _LARGEFILE64_SOURCE
@@ -27,7 +27,7 @@
 
 #include <zlib.h>
 #endif // HAVE_ZLIB
-#endif // HAVE_LIBGME
+#endif // HAVE_GME
 
 #include "../doomdef.h"
 #include "../doomstat.h" // menuactive
@@ -73,11 +73,11 @@
 #define MUS_MODPLUG MUS_MODPLUG_UNUSED
 #endif
 
-#ifdef HAVE_LIBGME
-#include "gme/gme.h"
+#ifdef HAVE_GME
+#include <gme/gme.h>
 #define GME_TREBLE 5.0f
 #define GME_BASS 1.0f
-#endif // HAVE_LIBGME
+#endif // HAVE_GME
 
 static UINT16 BUFFERSIZE = 2048;
 static UINT16 SAMPLERATE = 44100;
@@ -110,7 +110,7 @@ static INT32 fading_id;
 static void (*fading_callback)(void);
 static boolean fading_nocleanup;
 
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 static Music_Emu *gme;
 static UINT16 current_track;
 #endif
@@ -196,9 +196,9 @@ static void MidiSoundfontPath_Onchange(void)
 // make sure that s_sound.c does not already verify these
 // which happens when: defined(HAVE_MIXERX) && !defined(HAVE_MIXER)
 static CV_PossibleValue_t midiplayer_cons_t[] = {{MIDI_OPNMIDI, "OPNMIDI"}, {MIDI_Fluidsynth, "Fluidsynth"}, {MIDI_Timidity, "Timidity"}, {MIDI_Native, "Native"}, {0, NULL}};
-consvar_t cv_midiplayer = {"midiplayer", "OPNMIDI" /*MIDI_OPNMIDI*/, CV_CALL|CV_NOINIT|CV_SAVE, midiplayer_cons_t, Midiplayer_Onchange, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_midisoundfontpath = {"midisoundfont", "sf2/8bitsf.SF2", CV_CALL|CV_NOINIT|CV_SAVE, NULL, MidiSoundfontPath_Onchange, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_miditimiditypath = {"midisoundbank", "./timidity", CV_SAVE, NULL, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_midiplayer = CVAR_INIT ("midiplayer", "OPNMIDI" /*MIDI_OPNMIDI*/, CV_CALL|CV_NOINIT|CV_SAVE, midiplayer_cons_t, Midiplayer_Onchange);
+consvar_t cv_midisoundfontpath = CVAR_INIT ("midisoundfont", "sf2/8bitsf.SF2", CV_CALL|CV_NOINIT|CV_SAVE, NULL, MidiSoundfontPath_Onchange);
+consvar_t cv_miditimiditypath = CVAR_INIT ("midisoundbank", "./timidity", CV_SAVE, NULL, NULL);
 #endif
 
 static void var_cleanup(void)
@@ -219,6 +219,30 @@ static void var_cleanup(void)
 
 	internal_volume = 100;
 }
+
+#if defined (HAVE_GME) && defined (HAVE_ZLIB)
+static const char* get_zlib_error(int zErr)
+{
+	switch (zErr)
+	{
+		case Z_ERRNO:
+			return "Z_ERRNO";
+		case Z_STREAM_ERROR:
+			return "Z_STREAM_ERROR";
+		case Z_DATA_ERROR:
+			return "Z_DATA_ERROR";
+		case Z_MEM_ERROR:
+			return "Z_MEM_ERROR";
+		case Z_BUF_ERROR:
+			return "Z_BUF_ERROR";
+		case Z_VERSION_ERROR:
+			return "Z_VERSION_ERROR";
+		default:
+			return "unknown error";
+	}
+}
+#endif
+
 /// ------------------------
 /// Audio System
 /// ------------------------
@@ -294,7 +318,7 @@ void I_ShutdownSound(void)
 
 	SDL_QuitSubSystem(SDL_INIT_AUDIO);
 
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 		gme_delete(gme);
 #endif
@@ -429,7 +453,7 @@ void *I_GetSfx(sfxinfo_t *sfx)
 	void *lump;
 	Mix_Chunk *chunk;
 	SDL_RWops *rw;
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	Music_Emu *emu;
 	gme_info_t *info;
 #endif
@@ -449,7 +473,7 @@ void *I_GetSfx(sfxinfo_t *sfx)
 	}
 
 	// Not a doom sound? Try something else.
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	// VGZ format
 	if (((UINT8 *)lump)[0] == 0x1F
 		&& ((UINT8 *)lump)[1] == 0x8B)
@@ -475,7 +499,7 @@ void *I_GetSfx(sfxinfo_t *sfx)
 			zErr = inflate(&stream, Z_FINISH);
 			if (zErr == Z_STREAM_END) {
 				// Run GME on new data
-				if (!gme_open_data(inflatedData, inflatedLen, &emu, 44100))
+				if (!gme_open_data(inflatedData, inflatedLen, &emu, SAMPLERATE))
 				{
 					short *mem;
 					UINT32 len;
@@ -498,58 +522,18 @@ void *I_GetSfx(sfxinfo_t *sfx)
 				}
 			}
 			else
-			{
-				const char *errorType;
-				switch (zErr)
-				{
-					case Z_ERRNO:
-						errorType = "Z_ERRNO"; break;
-					case Z_STREAM_ERROR:
-						errorType = "Z_STREAM_ERROR"; break;
-					case Z_DATA_ERROR:
-						errorType = "Z_DATA_ERROR"; break;
-					case Z_MEM_ERROR:
-						errorType = "Z_MEM_ERROR"; break;
-					case Z_BUF_ERROR:
-						errorType = "Z_BUF_ERROR"; break;
-					case Z_VERSION_ERROR:
-						errorType = "Z_VERSION_ERROR"; break;
-					default:
-						errorType = "unknown error";
-				}
-				CONS_Alert(CONS_ERROR,"Encountered %s when running inflate: %s\n", errorType, stream.msg);
-			}
+				CONS_Alert(CONS_ERROR,"Encountered %s when running inflate: %s\n", get_zlib_error(zErr), stream.msg);
 			(void)inflateEnd(&stream);
 		}
 		else // Hold up, zlib's got a problem
-		{
-			const char *errorType;
-			switch (zErr)
-			{
-				case Z_ERRNO:
-					errorType = "Z_ERRNO"; break;
-				case Z_STREAM_ERROR:
-					errorType = "Z_STREAM_ERROR"; break;
-				case Z_DATA_ERROR:
-					errorType = "Z_DATA_ERROR"; break;
-				case Z_MEM_ERROR:
-					errorType = "Z_MEM_ERROR"; break;
-				case Z_BUF_ERROR:
-					errorType = "Z_BUF_ERROR"; break;
-				case Z_VERSION_ERROR:
-					errorType = "Z_VERSION_ERROR"; break;
-				default:
-					errorType = "unknown error";
-			}
-			CONS_Alert(CONS_ERROR,"Encountered %s when running inflateInit: %s\n", errorType, stream.msg);
-		}
+			CONS_Alert(CONS_ERROR,"Encountered %s when running inflateInit: %s\n", get_zlib_error(zErr), stream.msg);
 		Z_Free(inflatedData); // GME didn't open jack, but don't let that stop us from freeing this up
 #else
 		return NULL; // No zlib support
 #endif
 	}
 	// Try to read it as a GME sound
-	else if (!gme_open_data(lump, sfx->length, &emu, 44100))
+	else if (!gme_open_data(lump, sfx->length, &emu, SAMPLERATE))
 	{
 		short *mem;
 		UINT32 len;
@@ -745,7 +729,7 @@ static UINT32 music_fade(UINT32 interval, void *param)
 	}
 }
 
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 static void mix_gme(void *udata, Uint8 *stream, int len)
 {
 	int i;
@@ -813,7 +797,7 @@ void I_ShutdownMusic(void)
 
 musictype_t I_SongType(void)
 {
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 		return MU_GME;
 	else
@@ -844,7 +828,7 @@ musictype_t I_SongType(void)
 boolean I_SongPlaying(void)
 {
 	return (
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 		(I_SongType() == MU_GME && gme) ||
 #endif
 #ifdef HAVE_OPENMPT
@@ -867,7 +851,7 @@ boolean I_SetSongSpeed(float speed)
 {
 	if (speed > 250.0f)
 		speed = 250.0f; //limit speed up to 250x
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 	{
 		SDL_LockAudio();
@@ -880,13 +864,18 @@ boolean I_SetSongSpeed(float speed)
 #ifdef HAVE_OPENMPT
 	if (openmpt_mhandle)
 	{
-		char modspd[13];
-
 		if (speed > 4.0f)
 			speed = 4.0f; // Limit this to 4x to prevent crashing, stupid fix but... ~SteelT 27/9/19
-
-		sprintf(modspd, "%g", speed);
-		openmpt_module_ctl_set(openmpt_mhandle, "play.tempo_factor", modspd);
+#if OPENMPT_API_VERSION_MAJOR < 1 && OPENMPT_API_VERSION_MINOR < 5
+		{
+			// deprecated in 0.5.0
+			char modspd[13];
+			sprintf(modspd, "%g", speed);
+			openmpt_module_ctl_set(openmpt_mhandle, "play.tempo_factor", modspd);
+		}
+#else
+		openmpt_module_ctl_set_floatingpoint(openmpt_mhandle, "play.tempo_factor", (double)speed);
+#endif
 		return true;
 	}
 #else
@@ -904,7 +893,7 @@ UINT32 I_GetSongLength(void)
 {
 	INT32 length;
 
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 	{
 		gme_info_t *info;
@@ -974,7 +963,7 @@ boolean I_SetSongLoopPoint(UINT32 looppoint)
 
 UINT32 I_GetSongLoopPoint(void)
 {
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 	{
 		INT32 looppoint;
@@ -1003,7 +992,7 @@ UINT32 I_GetSongLoopPoint(void)
 boolean I_SetSongPosition(UINT32 position)
 {
 	UINT32 length;
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 	{
 		// this is unstable, so fail silently
@@ -1066,7 +1055,7 @@ boolean I_SetSongPosition(UINT32 position)
 
 UINT32 I_GetSongPosition(void)
 {
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 	{
 		INT32 position = gme_tell(gme);
@@ -1135,7 +1124,7 @@ boolean I_LoadSong(char *data, size_t len)
 	SDL_RWops *rw;
 
 	if (music
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 		|| gme
 #endif
 #ifdef HAVE_OPENMPT
@@ -1147,7 +1136,7 @@ boolean I_LoadSong(char *data, size_t len)
 	// always do this whether or not a music already exists
 	var_cleanup();
 
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if ((UINT8)data[0] == 0x1F
 		&& (UINT8)data[1] == 0x8B)
 	{
@@ -1170,77 +1159,30 @@ boolean I_LoadSong(char *data, size_t len)
 		if (zErr == Z_OK) // We're good to go
 		{
 			zErr = inflate(&stream, Z_FINISH);
-			if (zErr == Z_STREAM_END) {
+			if (zErr == Z_STREAM_END)
+			{
 				// Run GME on new data
-				if (!gme_open_data(inflatedData, inflatedLen, &gme, 44100))
+				if (!gme_open_data(inflatedData, inflatedLen, &gme, SAMPLERATE))
 				{
-					gme_equalizer_t eq = {GME_TREBLE, GME_BASS, 0,0,0,0,0,0,0,0};
-					gme_start_track(gme, 0);
-					current_track = 0;
-					gme_set_equalizer(gme, &eq);
-					Mix_HookMusic(mix_gme, gme);
 					Z_Free(inflatedData); // GME supposedly makes a copy for itself, so we don't need this lying around
 					return true;
 				}
 			}
 			else
-			{
-				const char *errorType;
-				switch (zErr)
-				{
-					case Z_ERRNO:
-						errorType = "Z_ERRNO"; break;
-					case Z_STREAM_ERROR:
-						errorType = "Z_STREAM_ERROR"; break;
-					case Z_DATA_ERROR:
-						errorType = "Z_DATA_ERROR"; break;
-					case Z_MEM_ERROR:
-						errorType = "Z_MEM_ERROR"; break;
-					case Z_BUF_ERROR:
-						errorType = "Z_BUF_ERROR"; break;
-					case Z_VERSION_ERROR:
-						errorType = "Z_VERSION_ERROR"; break;
-					default:
-						errorType = "unknown error";
-				}
-				CONS_Alert(CONS_ERROR,"Encountered %s when running inflate: %s\n", errorType, stream.msg);
-			}
+				CONS_Alert(CONS_ERROR, "Encountered %s when running inflate: %s\n", get_zlib_error(zErr), stream.msg);
 			(void)inflateEnd(&stream);
 		}
 		else // Hold up, zlib's got a problem
-		{
-			const char *errorType;
-			switch (zErr)
-			{
-				case Z_ERRNO:
-					errorType = "Z_ERRNO"; break;
-				case Z_STREAM_ERROR:
-					errorType = "Z_STREAM_ERROR"; break;
-				case Z_DATA_ERROR:
-					errorType = "Z_DATA_ERROR"; break;
-				case Z_MEM_ERROR:
-					errorType = "Z_MEM_ERROR"; break;
-				case Z_BUF_ERROR:
-					errorType = "Z_BUF_ERROR"; break;
-				case Z_VERSION_ERROR:
-					errorType = "Z_VERSION_ERROR"; break;
-				default:
-					errorType = "unknown error";
-			}
-			CONS_Alert(CONS_ERROR,"Encountered %s when running inflateInit: %s\n", errorType, stream.msg);
-		}
+			CONS_Alert(CONS_ERROR, "Encountered %s when running inflateInit: %s\n", get_zlib_error(zErr), stream.msg);
 		Z_Free(inflatedData); // GME didn't open jack, but don't let that stop us from freeing this up
+		return false;
 #else
-		CONS_Alert(CONS_ERROR,"Cannot decompress VGZ; no zlib support\n");
-		return true;
+		CONS_Alert(CONS_ERROR, "Cannot decompress VGZ; no zlib support\n");
+		return false;
 #endif
 	}
-	else if (!gme_open_data(data, len, &gme, 44100))
-	{
-		gme_equalizer_t eq = {GME_TREBLE, GME_BASS, 0,0,0,0,0,0,0,0};
-		gme_set_equalizer(gme, &eq);
+	else if (!gme_open_data(data, len, &gme, SAMPLERATE))
 		return true;
-	}
 #endif
 
 #ifdef HAVE_MIXERX
@@ -1329,7 +1271,7 @@ void I_UnloadSong(void)
 {
 	I_StopSong();
 
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 	{
 		gme_delete(gme);
@@ -1352,9 +1294,15 @@ void I_UnloadSong(void)
 
 boolean I_PlaySong(boolean looping)
 {
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 	{
+		gme_equalizer_t eq = {GME_TREBLE, GME_BASS, 0,0,0,0,0,0,0,0};
+#if defined (GME_VERSION) && GME_VERSION >= 0x000603
+		if (looping)
+			gme_set_autoload_playback_limit(gme, 0);
+#endif
+		gme_set_equalizer(gme, &eq);
 		gme_start_track(gme, 0);
 		current_track = 0;
 		Mix_HookMusic(mix_gme, gme);
@@ -1412,7 +1360,7 @@ void I_StopSong(void)
 	if (!fading_nocleanup)
 		I_StopFadingSong();
 
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	if (gme)
 	{
 		Mix_HookMusic(NULL, NULL);
@@ -1485,7 +1433,7 @@ void I_SetMusicVolume(UINT8 volume)
 
 boolean I_SetSongTrack(int track)
 {
-#ifdef HAVE_LIBGME
+#ifdef HAVE_GME
 	// If the specified track is within the number of tracks playing, then change it
 	if (gme)
 	{

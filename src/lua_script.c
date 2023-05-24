@@ -1,7 +1,7 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
 // Copyright (C) 2012-2016 by John "JTE" Muniz.
-// Copyright (C) 2012-2019 by Sonic Team Junior.
+// Copyright (C) 2012-2023 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -11,20 +11,22 @@
 /// \brief Lua scripting basics
 
 #include "doomdef.h"
-#ifdef HAVE_BLUA
 #include "fastcmp.h"
 #include "dehacked.h"
+#include "deh_lua.h"
 #include "z_zone.h"
 #include "w_wad.h"
 #include "p_setup.h"
 #include "r_state.h"
+#include "r_sky.h"
 #include "g_game.h"
+#include "g_input.h"
+#include "f_finale.h"
 #include "byteptr.h"
 #include "p_saveg.h"
 #include "p_local.h"
-#ifdef ESLOPE
-#include "p_slopes.h" // for P_SlopeById
-#endif
+#include "p_slopes.h" // for P_SlopeById and slopelist
+#include "p_polyobj.h" // polyobj_t, PolyObjects
 #ifdef LUA_ALLOW_BYTECODE
 #include "d_netfil.h" // for LUA_DumpFile
 #endif
@@ -34,6 +36,7 @@
 #include "lua_hook.h"
 
 #include "doomstat.h"
+#include "g_state.h"
 
 lua_State *gL = NULL;
 
@@ -51,8 +54,11 @@ static lua_CFunction liblist[] = {
 	LUA_SkinLib, // skin_t, skins[]
 	LUA_ThinkerLib, // thinker_t
 	LUA_MapLib, // line_t, side_t, sector_t, subsector_t
+	LUA_TagLib, // tags
+	LUA_PolyObjLib, // polyobj_t
 	LUA_BlockmapLib, // blockmap stuff
 	LUA_HudLib, // HUD stuff
+	LUA_InputLib, // inputs
 	NULL
 };
 
@@ -79,11 +85,387 @@ FUNCNORETURN static int LUA_Panic(lua_State *L)
 #endif
 }
 
+#define LEVELS1 12 // size of the first part of the stack
+#define LEVELS2 10 // size of the second part of the stack
+
+// Error handler used with pcall() when loading scripts or calling hooks
+// Takes a string with the original error message,
+// appends the traceback to it, and return the result
+int LUA_GetErrorMessage(lua_State *L)
+{
+	int level = 1;
+	int firstpart = 1; // still before eventual `...'
+	lua_Debug ar;
+
+	lua_pushliteral(L, "\nstack traceback:");
+	while (lua_getstack(L, level++, &ar))
+	{
+		if (level > LEVELS1 && firstpart)
+		{
+			// no more than `LEVELS2' more levels?
+			if (!lua_getstack(L, level + LEVELS2, &ar))
+				level--; // keep going
+			else
+			{
+				lua_pushliteral(L, "\n    ..."); // too many levels
+				while (lua_getstack(L, level + LEVELS2, &ar)) // find last levels
+					level++;
+			}
+			firstpart = 0;
+			continue;
+		}
+		lua_pushliteral(L, "\n    ");
+		lua_getinfo(L, "Snl", &ar);
+		lua_pushfstring(L, "%s:", ar.short_src);
+		if (ar.currentline > 0)
+			lua_pushfstring(L, "%d:", ar.currentline);
+		if (*ar.namewhat != '\0') // is there a name?
+			lua_pushfstring(L, " in function " LUA_QS, ar.name);
+		else
+		{
+			if (*ar.what == 'm') // main?
+				lua_pushfstring(L, " in main chunk");
+			else if (*ar.what == 'C' || *ar.what == 't')
+				lua_pushliteral(L, " ?"); // C function or tail call
+			else
+				lua_pushfstring(L, " in function <%s:%d>",
+					ar.short_src, ar.linedefined);
+		}
+		lua_concat(L, lua_gettop(L));
+	}
+	lua_concat(L, lua_gettop(L));
+	return 1;
+}
+
+int LUA_Call(lua_State *L, int nargs, int nresults, int errorhandlerindex)
+{
+	int err = lua_pcall(L, nargs, nresults, errorhandlerindex);
+
+	if (err)
+	{
+		CONS_Alert(CONS_WARNING, "%s\n", lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
+
+	return err;
+}
+
+// Moved here from lib_getenum.
+int LUA_PushGlobals(lua_State *L, const char *word)
+{
+	if (fastcmp(word,"gamemap")) {
+		lua_pushinteger(L, gamemap);
+		return 1;
+	} else if (fastcmp(word,"udmf")) {
+		lua_pushboolean(L, udmf);
+		return 1;
+	} else if (fastcmp(word,"maptol")) {
+		lua_pushinteger(L, maptol);
+		return 1;
+	} else if (fastcmp(word,"ultimatemode")) {
+		lua_pushboolean(L, ultimatemode != 0);
+		return 1;
+	} else if (fastcmp(word,"mariomode")) {
+		lua_pushboolean(L, mariomode != 0);
+		return 1;
+	} else if (fastcmp(word,"twodlevel")) {
+		lua_pushboolean(L, twodlevel != 0);
+		return 1;
+	} else if (fastcmp(word,"circuitmap")) {
+		lua_pushboolean(L, circuitmap);
+		return 1;
+	} else if (fastcmp(word,"stoppedclock")) {
+		lua_pushboolean(L, stoppedclock);
+		return 1;
+	} else if (fastcmp(word,"netgame")) {
+		lua_pushboolean(L, netgame);
+		return 1;
+	} else if (fastcmp(word,"multiplayer")) {
+		lua_pushboolean(L, multiplayer);
+		return 1;
+	} else if (fastcmp(word,"modeattacking")) {
+		lua_pushboolean(L, modeattacking);
+		return 1;
+	} else if (fastcmp(word,"metalrecording")) {
+		lua_pushboolean(L, metalrecording);
+		return 1;
+	} else if (fastcmp(word,"splitscreen")) {
+		lua_pushboolean(L, splitscreen);
+		return 1;
+	} else if (fastcmp(word,"gamecomplete")) {
+		lua_pushboolean(L, (gamecomplete != 0));
+		return 1;
+	} else if (fastcmp(word,"marathonmode")) {
+		lua_pushinteger(L, marathonmode);
+		return 1;
+	} else if (fastcmp(word,"devparm")) {
+		lua_pushboolean(L, devparm);
+		return 1;
+	} else if (fastcmp(word,"modifiedgame")) {
+		lua_pushboolean(L, modifiedgame && !savemoddata);
+		return 1;
+	} else if (fastcmp(word,"menuactive")) {
+		lua_pushboolean(L, menuactive);
+		return 1;
+	} else if (fastcmp(word,"paused")) {
+		lua_pushboolean(L, paused);
+		return 1;
+	} else if (fastcmp(word,"bluescore")) {
+		lua_pushinteger(L, bluescore);
+		return 1;
+	} else if (fastcmp(word,"redscore")) {
+		lua_pushinteger(L, redscore);
+		return 1;
+	} else if (fastcmp(word,"timelimit")) {
+		lua_pushinteger(L, cv_timelimit.value);
+		return 1;
+	} else if (fastcmp(word,"pointlimit")) {
+		lua_pushinteger(L, cv_pointlimit.value);
+		return 1;
+	// begin map vars
+	} else if (fastcmp(word,"spstage_start")) {
+		lua_pushinteger(L, spstage_start);
+		return 1;
+	} else if (fastcmp(word,"spmarathon_start")) {
+		lua_pushinteger(L, spmarathon_start);
+		return 1;
+	} else if (fastcmp(word,"sstage_start")) {
+		lua_pushinteger(L, sstage_start);
+		return 1;
+	} else if (fastcmp(word,"sstage_end")) {
+		lua_pushinteger(L, sstage_end);
+		return 1;
+	} else if (fastcmp(word,"smpstage_start")) {
+		lua_pushinteger(L, smpstage_start);
+		return 1;
+	} else if (fastcmp(word,"smpstage_end")) {
+		lua_pushinteger(L, smpstage_end);
+		return 1;
+	} else if (fastcmp(word,"titlemap")) {
+		lua_pushinteger(L, titlemap);
+		return 1;
+	} else if (fastcmp(word,"titlemapinaction")) {
+		lua_pushboolean(L, (titlemapinaction != TITLEMAP_OFF));
+		return 1;
+	} else if (fastcmp(word,"bootmap")) {
+		lua_pushinteger(L, bootmap);
+		return 1;
+	} else if (fastcmp(word,"tutorialmap")) {
+		lua_pushinteger(L, tutorialmap);
+		return 1;
+	} else if (fastcmp(word,"tutorialmode")) {
+		lua_pushboolean(L, tutorialmode);
+		return 1;
+	// end map vars
+	// begin CTF colors
+	} else if (fastcmp(word,"skincolor_redteam")) {
+		lua_pushinteger(L, skincolor_redteam);
+		return 1;
+	} else if (fastcmp(word,"skincolor_blueteam")) {
+		lua_pushinteger(L, skincolor_blueteam);
+		return 1;
+	} else if (fastcmp(word,"skincolor_redring")) {
+		lua_pushinteger(L, skincolor_redring);
+		return 1;
+	} else if (fastcmp(word,"skincolor_bluering")) {
+		lua_pushinteger(L, skincolor_bluering);
+		return 1;
+	// end CTF colors
+	// begin timers
+	} else if (fastcmp(word,"invulntics")) {
+		lua_pushinteger(L, invulntics);
+		return 1;
+	} else if (fastcmp(word,"sneakertics")) {
+		lua_pushinteger(L, sneakertics);
+		return 1;
+	} else if (fastcmp(word,"flashingtics")) {
+		lua_pushinteger(L, flashingtics);
+		return 1;
+	} else if (fastcmp(word,"tailsflytics")) {
+		lua_pushinteger(L, tailsflytics);
+		return 1;
+	} else if (fastcmp(word,"underwatertics")) {
+		lua_pushinteger(L, underwatertics);
+		return 1;
+	} else if (fastcmp(word,"spacetimetics")) {
+		lua_pushinteger(L, spacetimetics);
+		return 1;
+	} else if (fastcmp(word,"extralifetics")) {
+		lua_pushinteger(L, extralifetics);
+		return 1;
+	} else if (fastcmp(word,"nightslinktics")) {
+		lua_pushinteger(L, nightslinktics);
+		return 1;
+	} else if (fastcmp(word,"gameovertics")) {
+		lua_pushinteger(L, gameovertics);
+		return 1;
+	} else if (fastcmp(word,"ammoremovaltics")) {
+		lua_pushinteger(L, ammoremovaltics);
+		return 1;
+	// end timers
+	} else if (fastcmp(word,"gametype")) {
+		lua_pushinteger(L, gametype);
+		return 1;
+	} else if (fastcmp(word,"gametyperules")) {
+		lua_pushinteger(L, gametyperules);
+		return 1;
+	} else if (fastcmp(word,"leveltime")) {
+		lua_pushinteger(L, leveltime);
+		return 1;
+	} else if (fastcmp(word,"sstimer")) {
+		lua_pushinteger(L, sstimer);
+		return 1;
+	} else if (fastcmp(word,"curWeather")) {
+		lua_pushinteger(L, curWeather);
+		return 1;
+	} else if (fastcmp(word,"globalweather")) {
+		lua_pushinteger(L, globalweather);
+		return 1;
+	} else if (fastcmp(word,"levelskynum")) {
+		lua_pushinteger(L, levelskynum);
+		return 1;
+	} else if (fastcmp(word,"globallevelskynum")) {
+		lua_pushinteger(L, globallevelskynum);
+		return 1;
+	} else if (fastcmp(word,"mapmusname")) {
+		lua_pushstring(L, mapmusname);
+		return 1;
+	} else if (fastcmp(word,"mapmusflags")) {
+		lua_pushinteger(L, mapmusflags);
+		return 1;
+	} else if (fastcmp(word,"mapmusposition")) {
+		lua_pushinteger(L, mapmusposition);
+		return 1;
+	// local player variables, by popular request
+	} else if (fastcmp(word,"consoleplayer")) { // player controlling console (aka local player 1)
+		if (!addedtogame || consoleplayer < 0 || !playeringame[consoleplayer])
+			return 0;
+		LUA_PushUserdata(L, &players[consoleplayer], META_PLAYER);
+		return 1;
+	} else if (fastcmp(word,"displayplayer")) { // player visible on screen (aka display player 1)
+		if (displayplayer < 0 || !playeringame[displayplayer])
+			return 0;
+		LUA_PushUserdata(L, &players[displayplayer], META_PLAYER);
+		return 1;
+	} else if (fastcmp(word,"secondarydisplayplayer")) { // local/display player 2, for splitscreen
+		if (!splitscreen || secondarydisplayplayer < 0 || !playeringame[secondarydisplayplayer])
+			return 0;
+		LUA_PushUserdata(L, &players[secondarydisplayplayer], META_PLAYER);
+		return 1;
+	} else if (fastcmp(word,"isserver")) {
+		lua_pushboolean(L, server);
+		return 1;
+	} else if (fastcmp(word,"isdedicatedserver")) {
+		lua_pushboolean(L, dedicated);
+		return 1;
+	// end local player variables
+	} else if (fastcmp(word,"server")) {
+		if ((!multiplayer || !netgame) && !playeringame[serverplayer])
+			return 0;
+		LUA_PushUserdata(L, &players[serverplayer], META_PLAYER);
+		return 1;
+	} else if (fastcmp(word,"emeralds")) {
+		lua_pushinteger(L, emeralds);
+		return 1;
+	} else if (fastcmp(word,"gravity")) {
+		lua_pushinteger(L, gravity);
+		return 1;
+	} else if (fastcmp(word,"VERSION")) {
+		lua_pushinteger(L, VERSION);
+		return 1;
+	} else if (fastcmp(word,"SUBVERSION")) {
+		lua_pushinteger(L, SUBVERSION);
+		return 1;
+	} else if (fastcmp(word,"VERSIONSTRING")) {
+		lua_pushstring(L, VERSIONSTRING);
+		return 1;
+	} else if (fastcmp(word, "token")) {
+		lua_pushinteger(L, token);
+		return 1;
+	} else if (fastcmp(word, "gamestate")) {
+		lua_pushinteger(L, gamestate);
+		return 1;
+	} else if (fastcmp(word, "stagefailed")) {
+		lua_pushboolean(L, stagefailed);
+		return 1;
+	} else if (fastcmp(word, "mouse")) {
+		LUA_PushUserdata(L, &mouse, META_MOUSE);
+		return 1;
+	} else if (fastcmp(word, "mouse2")) {
+		LUA_PushUserdata(L, &mouse2, META_MOUSE);
+		return 1;
+	} else if (fastcmp(word, "camera")) {
+		LUA_PushUserdata(L, &camera, META_CAMERA);
+		return 1;
+	} else if (fastcmp(word, "camera2")) {
+		if (!splitscreen)
+			return 0;
+		LUA_PushUserdata(L, &camera2, META_CAMERA);
+		return 1;
+	}
+	return 0;
+}
+
+// See the above.
+int LUA_CheckGlobals(lua_State *L, const char *word)
+{
+	if (fastcmp(word, "redscore"))
+		redscore = (UINT32)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "bluescore"))
+		bluescore = (UINT32)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "skincolor_redteam"))
+		skincolor_redteam = (UINT16)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "skincolor_blueteam"))
+		skincolor_blueteam = (UINT16)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "skincolor_redring"))
+		skincolor_redring = (UINT16)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "skincolor_bluering"))
+		skincolor_bluering = (UINT16)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "emeralds"))
+		emeralds = (UINT16)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "token"))
+		token = (UINT32)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "gravity"))
+		gravity = (fixed_t)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "stoppedclock"))
+		stoppedclock = luaL_checkboolean(L, 2);
+	else if (fastcmp(word, "displayplayer"))
+	{
+		player_t *player = *((player_t **)luaL_checkudata(L, 2, META_PLAYER));
+
+		if (player)
+			displayplayer = player - players;
+	}
+	else if (fastcmp(word, "mapmusname"))
+	{
+		size_t strlength;
+		const char *str = luaL_checklstring(L, 2, &strlength);
+
+		if (strlength > 6)
+			return luaL_error(L, "string length out of range (maximum 6 characters)");
+
+		if (strlen(str) < strlength)
+			return luaL_error(L, "string must not contain embedded zeros!");
+
+		strlcpy(mapmusname, str, sizeof mapmusname);
+	}
+	else if (fastcmp(word, "mapmusflags"))
+		mapmusflags = (UINT16)luaL_checkinteger(L, 2);
+	else if (fastcmp(word, "stagefailed"))
+		stagefailed = luaL_checkboolean(L, 2);
+	else
+		return 0;
+
+	// Global variable set, so return and don't error.
+	return 1;
+}
+
 // This function decides which global variables you are allowed to set.
-static int noglobals(lua_State *L)
+static int setglobals(lua_State *L)
 {
 	const char *csname;
 	char *name;
+	enum actionnum actionnum;
 
 	lua_remove(L, 1); // we're not gonna be using _G
 	csname = lua_tostring(L, 1);
@@ -102,9 +484,16 @@ static int noglobals(lua_State *L)
 		lua_rawset(L, -3); // rawset doesn't trigger this metatable again.
 		// otherwise we would've used setfield, obviously.
 
+		actionnum = LUA_GetActionNumByName(name);
+		if (actionnum < NUMACTIONS)
+			actionsoverridden[actionnum] = true;
+
 		Z_Free(name);
 		return 0;
 	}
+
+	if (LUA_CheckGlobals(L, csname))
+		return 0;
 
 	Z_Free(name);
 	return luaL_error(L, "Implicit global " LUA_QS " prevented. Create a local variable instead.", csname);
@@ -130,11 +519,15 @@ static void LUA_ClearState(void)
 
 	// open base libraries
 	luaL_openlibs(L);
-	lua_pop(L, -1);
+	lua_settop(L, 0);
 
 	// make LREG_VALID table for all pushed userdata cache.
 	lua_newtable(L);
 	lua_setfield(L, LUA_REGISTRYINDEX, LREG_VALID);
+
+	// make LREG_METATABLES table for all registered metatables
+	lua_newtable(L);
+	lua_setfield(L, LUA_REGISTRYINDEX, LREG_METATABLES);
 
 	// open srb2 libraries
 	for(i = 0; liblist[i]; i++) {
@@ -144,7 +537,7 @@ static void LUA_ClearState(void)
 
 	// lock the global namespace
 	lua_getmetatable(L, LUA_GLOBALSINDEX);
-		lua_pushcfunction(L, noglobals);
+		lua_pushcfunction(L, setglobals);
 		lua_setfield(L, -2, "__newindex");
 		lua_newtable(L);
 		lua_setfield(L, -2, "__metatable");
@@ -167,11 +560,13 @@ void LUA_ClearExtVars(void)
 // Use this variable to prevent certain functions from running
 // if they were not called on lump load
 // (i.e. they were called in hooks or coroutines etc)
-boolean lua_lumploading = false;
+INT32 lua_lumploading = 0;
 
 // Load a script from a MYFILE
-static inline void LUA_LoadFile(MYFILE *f, char *name)
+static inline void LUA_LoadFile(MYFILE *f, char *name, boolean noresults)
 {
+	int errorhandlerindex;
+
 	if (!name)
 		name = wadfiles[f->wad]->filename;
 	CONS_Printf("Loading Lua script from %s\n", name);
@@ -180,19 +575,22 @@ static inline void LUA_LoadFile(MYFILE *f, char *name)
 	lua_pushinteger(gL, f->wad);
 	lua_setfield(gL, LUA_REGISTRYINDEX, "WAD");
 
-	lua_lumploading = true; // turn on loading flag
+	lua_lumploading++; // turn on loading flag
 
-	if (luaL_loadbuffer(gL, f->data, f->size, va("@%s",name)) || lua_pcall(gL, 0, 0, 0)) {
+	lua_pushcfunction(gL, LUA_GetErrorMessage);
+	errorhandlerindex = lua_gettop(gL);
+	if (luaL_loadbuffer(gL, f->data, f->size, va("@%s",name)) || lua_pcall(gL, 0, noresults ? 0 : LUA_MULTRET, lua_gettop(gL) - 1)) {
 		CONS_Alert(CONS_WARNING,"%s\n",lua_tostring(gL,-1));
 		lua_pop(gL,1);
 	}
 	lua_gc(gL, LUA_GCCOLLECT, 0);
+	lua_remove(gL, errorhandlerindex);
 
-	lua_lumploading = false; // turn off again
+	lua_lumploading--; // turn off again
 }
 
 // Load a script from a lump
-void LUA_LoadLump(UINT16 wad, UINT16 lump)
+void LUA_LoadLump(UINT16 wad, UINT16 lump, boolean noresults)
 {
 	MYFILE f;
 	char *name;
@@ -213,13 +611,13 @@ void LUA_LoadLump(UINT16 wad, UINT16 lump)
 	else // If it's not a .lua file, copy the lump name in too.
 	{
 		lumpinfo_t *lump_p = &wadfiles[wad]->lumpinfo[lump];
-		len += 1 + strlen(lump_p->name2); // length of file name, '|', and lump name
+		len += 1 + strlen(lump_p->fullname); // length of file name, '|', and lump name
 		name = malloc(len+1);
-		sprintf(name, "%s|%s", wadfiles[wad]->filename, lump_p->name2);
+		sprintf(name, "%s|%s", wadfiles[wad]->filename, lump_p->fullname);
 		name[len] = '\0';
 	}
 
-	LUA_LoadFile(&f, name); // actually load file!
+	LUA_LoadFile(&f, name, noresults); // actually load file!
 
 	free(name);
 	Z_Free(f.data);
@@ -324,7 +722,7 @@ fixed_t LUA_EvalMath(const char *word)
 	*b = '\0';
 
 	// eval string.
-	lua_pop(L, -1);
+	lua_settop(L, 0);
 	if (luaL_dostring(L, buf))
 	{
 		p = lua_tostring(L, -1);
@@ -345,25 +743,37 @@ fixed_t LUA_EvalMath(const char *word)
 // Pushes it to the stack and stores it in the registry.
 void LUA_PushUserdata(lua_State *L, void *data, const char *meta)
 {
+	if (LUA_RawPushUserdata(L, data) == LPUSHED_NEW)
+	{
+		luaL_getmetatable(L, meta);
+		lua_setmetatable(L, -2);
+	}
+}
+
+// Same as LUA_PushUserdata but don't set a metatable yet.
+lpushed_t LUA_RawPushUserdata(lua_State *L, void *data)
+{
+	lpushed_t status = LPUSHED_NIL;
+
 	void **userdata;
 
 	if (!data) { // push a NULL
 		lua_pushnil(L);
-		return;
+		return status;
 	}
 
 	lua_getfield(L, LUA_REGISTRYINDEX, LREG_VALID);
 	I_Assert(lua_istable(L, -1));
+
 	lua_pushlightuserdata(L, data);
 	lua_rawget(L, -2);
+
 	if (lua_isnil(L, -1)) { // no userdata? deary me, we'll have to make one.
 		lua_pop(L, 1); // pop the nil
 
 		// create the userdata
 		userdata = lua_newuserdata(L, sizeof(void *));
 		*userdata = data;
-		luaL_getmetatable(L, meta);
-		lua_setmetatable(L, -2);
 
 		// Set it in the registry so we can find it again
 		lua_pushlightuserdata(L, data); // k (store the userdata via the data's pointer)
@@ -371,8 +781,15 @@ void LUA_PushUserdata(lua_State *L, void *data, const char *meta)
 		lua_rawset(L, -4);
 
 		// stack is left with the userdata on top, as if getting it had originally succeeded.
+
+		status = LPUSHED_NEW;
 	}
+	else
+		status = LPUSHED_EXISTING;
+
 	lua_remove(L, -2); // remove LREG_VALID
+
+	return status;
 }
 
 // When userdata is freed, use this function to remove it from Lua.
@@ -432,6 +849,7 @@ void LUA_InvalidateLevel(void)
 	{
 		LUA_InvalidateUserdata(&sectors[i]);
 		LUA_InvalidateUserdata(&sectors[i].lines);
+		LUA_InvalidateUserdata(&sectors[i].tags);
 		if (sectors[i].ffloors)
 		{
 			for (rover = sectors[i].ffloors; rover; rover = rover->next)
@@ -441,12 +859,28 @@ void LUA_InvalidateLevel(void)
 	for (i = 0; i < numlines; i++)
 	{
 		LUA_InvalidateUserdata(&lines[i]);
+		LUA_InvalidateUserdata(&lines[i].tags);
+		LUA_InvalidateUserdata(lines[i].args);
+		LUA_InvalidateUserdata(lines[i].stringargs);
 		LUA_InvalidateUserdata(lines[i].sidenum);
 	}
 	for (i = 0; i < numsides; i++)
 		LUA_InvalidateUserdata(&sides[i]);
 	for (i = 0; i < numvertexes; i++)
 		LUA_InvalidateUserdata(&vertexes[i]);
+	for (i = 0; i < (size_t)numPolyObjects; i++)
+	{
+		LUA_InvalidateUserdata(&PolyObjects[i]);
+		LUA_InvalidateUserdata(&PolyObjects[i].vertices);
+		LUA_InvalidateUserdata(&PolyObjects[i].lines);
+	}
+	for (pslope_t *slope = slopelist; slope; slope = slope->next)
+	{
+		LUA_InvalidateUserdata(slope);
+		LUA_InvalidateUserdata(&slope->normal);
+		LUA_InvalidateUserdata(&slope->o);
+		LUA_InvalidateUserdata(&slope->d);
+	}
 #ifdef HAVE_LUA_SEGS
 	for (i = 0; i < numsegs; i++)
 		LUA_InvalidateUserdata(&segs[i]);
@@ -466,7 +900,12 @@ void LUA_InvalidateMapthings(void)
 		return;
 
 	for (i = 0; i < nummapthings; i++)
+	{
 		LUA_InvalidateUserdata(&mapthings[i]);
+		LUA_InvalidateUserdata(&mapthings[i].tags);
+		LUA_InvalidateUserdata(mapthings[i].args);
+		LUA_InvalidateUserdata(mapthings[i].stringargs);
+	}
 }
 
 void LUA_InvalidatePlayer(player_t *player)
@@ -481,9 +920,13 @@ void LUA_InvalidatePlayer(player_t *player)
 enum
 {
 	ARCH_NULL=0,
-	ARCH_BOOLEAN,
-	ARCH_SIGNED,
-	ARCH_STRING,
+	ARCH_TRUE,
+	ARCH_FALSE,
+	ARCH_INT8,
+	ARCH_INT16,
+	ARCH_INT32,
+	ARCH_SMALLSTRING,
+	ARCH_LARGESTRING,
 	ARCH_TABLE,
 
 	ARCH_MOBJINFO,
@@ -501,10 +944,11 @@ enum
 	ARCH_NODE,
 #endif
 	ARCH_FFLOOR,
-#ifdef ESLOPE
+	ARCH_POLYOBJ,
 	ARCH_SLOPE,
-#endif
 	ARCH_MAPHEADER,
+	ARCH_SKINCOLOR,
+	ARCH_MOUSE,
 
 	ARCH_TEND=0xFF,
 };
@@ -528,10 +972,11 @@ static const struct {
 	{META_NODE,     ARCH_NODE},
 #endif
 	{META_FFLOOR,	ARCH_FFLOOR},
-#ifdef ESLOPE
+	{META_POLYOBJ,  ARCH_POLYOBJ},
 	{META_SLOPE,    ARCH_SLOPE},
-#endif
 	{META_MAPHEADER,   ARCH_MAPHEADER},
+	{META_SKINCOLOR,   ARCH_SKINCOLOR},
+	{META_MOUSE,    ARCH_MOUSE},
 	{NULL,          ARCH_NULL}
 };
 
@@ -572,22 +1017,33 @@ static UINT8 ArchiveValue(int TABLESINDEX, int myindex)
 		WRITEUINT8(save_p, ARCH_NULL);
 		return 2;
 	case LUA_TBOOLEAN:
-		WRITEUINT8(save_p, ARCH_BOOLEAN);
-		WRITEUINT8(save_p, lua_toboolean(gL, myindex));
+		WRITEUINT8(save_p, lua_toboolean(gL, myindex) ? ARCH_TRUE : ARCH_FALSE);
 		break;
 	case LUA_TNUMBER:
 	{
 		lua_Integer number = lua_tointeger(gL, myindex);
-        WRITEUINT8(save_p, ARCH_SIGNED);
-        WRITEFIXED(save_p, number);
+		if (number >= INT8_MIN && number <= INT8_MAX)
+		{
+			WRITEUINT8(save_p, ARCH_INT8);
+			WRITESINT8(save_p, number);
+		}
+		else if (number >= INT16_MIN && number <= INT16_MAX)
+		{
+			WRITEUINT8(save_p, ARCH_INT16);
+			WRITEINT16(save_p, number);
+		}
+		else
+		{
+			WRITEUINT8(save_p, ARCH_INT32);
+			WRITEFIXED(save_p, number);
+		}
 		break;
 	}
 	case LUA_TSTRING:
 	{
-		UINT16 len = (UINT16)lua_objlen(gL, myindex); // get length of string, including embedded zeros
+		UINT32 len = (UINT32)lua_objlen(gL, myindex); // get length of string, including embedded zeros
 		const char *s = lua_tostring(gL, myindex);
-		UINT16 i = 0;
-		WRITEUINT8(save_p, ARCH_STRING);
+		UINT32 i = 0;
 		// if you're wondering why we're writing a string to save_p this way,
 		// it turns out that Lua can have embedded zeros ('\0') in the strings,
 		// so we can't use WRITESTRING as that cuts off when it finds a '\0'.
@@ -595,7 +1051,16 @@ static UINT8 ArchiveValue(int TABLESINDEX, int myindex)
 		// fixing the awful crashes previously encountered for reading strings longer than 1024
 		// (yes I know that's kind of a stupid thing to care about, but it'd be evil to trim or ignore them?)
 		// -- Monster Iestyn 05/08/18
-		WRITEUINT16(save_p, len); // save size of string
+		if (len < 255)
+		{
+			WRITEUINT8(save_p, ARCH_SMALLSTRING);
+			WRITEUINT8(save_p, len); // save size of string
+		}
+		else
+		{
+			WRITEUINT8(save_p, ARCH_LARGESTRING);
+			WRITEUINT32(save_p, len); // save size of string
+		}
 		while (i < len)
 			WRITECHAR(save_p, s[i++]); // write chars individually, including the embedded zeros
 		break;
@@ -617,7 +1082,16 @@ static UINT8 ArchiveValue(int TABLESINDEX, int myindex)
 			lua_pop(gL, 1);
 		}
 		if (!found)
+		{
 			t++;
+
+			if (t == 0)
+			{
+				CONS_Alert(CONS_ERROR, "Too many tables to archive!\n");
+				WRITEUINT8(save_p, ARCH_NULL);
+				return 0;
+			}
+		}
 
 		WRITEUINT8(save_p, ARCH_TABLE);
 		WRITEUINT16(save_p, t);
@@ -765,16 +1239,8 @@ static UINT8 ArchiveValue(int TABLESINDEX, int myindex)
 			if (!rover)
 				WRITEUINT8(save_p, ARCH_NULL);
 			else {
-				ffloor_t *r2;
-				UINT16 i = 0;
-				// search for id
-				for (r2 = rover->target->ffloors; r2; r2 = r2->next)
-				{
-					if (r2 == rover)
-						break;
-					i++;
-				}
-				if (!r2)
+				UINT16 i = P_GetFFloorID(rover);
+				if (i == UINT16_MAX) // invalid ID
 					WRITEUINT8(save_p, ARCH_NULL);
 				else
 				{
@@ -785,7 +1251,17 @@ static UINT8 ArchiveValue(int TABLESINDEX, int myindex)
 			}
 			break;
 		}
-#ifdef ESLOPE
+		case ARCH_POLYOBJ:
+		{
+			polyobj_t *polyobj = *((polyobj_t **)lua_touserdata(gL, myindex));
+			if (!polyobj)
+				WRITEUINT8(save_p, ARCH_NULL);
+			else {
+				WRITEUINT8(save_p, ARCH_POLYOBJ);
+				WRITEUINT16(save_p, polyobj-PolyObjects);
+			}
+			break;
+		}
 		case ARCH_SLOPE:
 		{
 			pslope_t *slope = *((pslope_t **)lua_touserdata(gL, myindex));
@@ -797,7 +1273,6 @@ static UINT8 ArchiveValue(int TABLESINDEX, int myindex)
 			}
 			break;
 		}
-#endif
 		case ARCH_MAPHEADER:
 		{
 			mapheader_t *header = *((mapheader_t **)lua_touserdata(gL, myindex));
@@ -807,6 +1282,20 @@ static UINT8 ArchiveValue(int TABLESINDEX, int myindex)
 				WRITEUINT8(save_p, ARCH_MAPHEADER);
 				WRITEUINT16(save_p, header - *mapheaderinfo);
 			}
+			break;
+		}
+		case ARCH_SKINCOLOR:
+		{
+			skincolor_t *info = *((skincolor_t **)lua_touserdata(gL, myindex));
+			WRITEUINT8(save_p, ARCH_SKINCOLOR);
+			WRITEUINT16(save_p, info - skincolors);
+			break;
+		}
+		case ARCH_MOUSE:
+		{
+			mouse_t *m = *((mouse_t **)lua_touserdata(gL, myindex));
+			WRITEUINT8(save_p, ARCH_MOUSE);
+			WRITEUINT8(save_p, m == &mouse ? 1 : 2);
 			break;
 		}
 		default:
@@ -904,26 +1393,32 @@ static void ArchiveTables(void)
 			// Write key
 			e = ArchiveValue(TABLESINDEX, -2); // key should be either a number or a string, ArchiveValue can handle this.
 			if (e == 2) // invalid key type (function, thread, lightuserdata, or anything we don't recognise)
-			{
-				lua_pushvalue(gL, -2);
-				CONS_Alert(CONS_ERROR, "Index '%s' (%s) of table %d could not be archived!\n", lua_tostring(gL, -1), luaL_typename(gL, -1), i);
-				lua_pop(gL, 1);
-			}
+				CONS_Alert(CONS_ERROR, "Index '%s' (%s) of table %d could not be archived!\n", lua_tostring(gL, -2), luaL_typename(gL, -2), i);
 			// Write value
 			e = ArchiveValue(TABLESINDEX, -1);
 			if (e == 1)
 				n++; // the table contained a new table we'll have to archive. :(
 			else if (e == 2) // invalid value type
-			{
-				lua_pushvalue(gL, -2);
-				CONS_Alert(CONS_ERROR, "Type of value for table %d entry '%s' (%s) could not be archived!\n", i, lua_tostring(gL, -1), luaL_typename(gL, -1));
-				lua_pop(gL, 1);
-			}
+				CONS_Alert(CONS_ERROR, "Type of value for table %d entry '%s' (%s) could not be archived!\n", i, lua_tostring(gL, -2), luaL_typename(gL, -1));
 
 			lua_pop(gL, 1);
 		}
-		lua_pop(gL, 1);
 		WRITEUINT8(save_p, ARCH_TEND);
+
+		// Write metatable ID
+		if (lua_getmetatable(gL, -1))
+		{
+			// registry.metatables[metatable]
+			lua_getfield(gL, LUA_REGISTRYINDEX, LREG_METATABLES);
+			lua_pushvalue(gL, -2);
+			lua_gettable(gL, -2);
+			WRITEUINT16(save_p, lua_isnil(gL, -1) ? 0 : lua_tointeger(gL, -1));
+			lua_pop(gL, 3);
+		}
+		else
+			WRITEUINT16(save_p, 0);
+
+		lua_pop(gL, 1);
 	}
 }
 
@@ -935,21 +1430,36 @@ static UINT8 UnArchiveValue(int TABLESINDEX)
 	case ARCH_NULL:
 		lua_pushnil(gL);
 		break;
-	case ARCH_BOOLEAN:
-		lua_pushboolean(gL, READUINT8(save_p));
+	case ARCH_TRUE:
+		lua_pushboolean(gL, true);
 		break;
-	case ARCH_SIGNED:
+	case ARCH_FALSE:
+		lua_pushboolean(gL, false);
+		break;
+	case ARCH_INT8:
+		lua_pushinteger(gL, READSINT8(save_p));
+		break;
+	case ARCH_INT16:
+		lua_pushinteger(gL, READINT16(save_p));
+		break;
+	case ARCH_INT32:
 		lua_pushinteger(gL, READFIXED(save_p));
 		break;
-	case ARCH_STRING:
+	case ARCH_SMALLSTRING:
+	case ARCH_LARGESTRING:
 	{
-		UINT16 len = READUINT16(save_p); // length of string, including embedded zeros
+		UINT32 len;
 		char *value;
-		UINT16 i = 0;
+		UINT32 i = 0;
+
 		// See my comments in the ArchiveValue function;
 		// it's much the same for reading strings as writing them!
 		// (i.e. we can't use READSTRING either)
 		// -- Monster Iestyn 05/08/18
+		if (type == ARCH_SMALLSTRING)
+			len = READUINT8(save_p); // length of string, including embedded zeros
+		else
+			len = READUINT32(save_p); // length of string, including embedded zeros
 		value = malloc(len); // make temp buffer of size len
 		// now read the actual string
 		while (i < len)
@@ -1019,13 +1529,20 @@ static UINT8 UnArchiveValue(int TABLESINDEX)
 			LUA_PushUserdata(gL, rover, META_FFLOOR);
 		break;
 	}
-#ifdef ESLOPE
+	case ARCH_POLYOBJ:
+		LUA_PushUserdata(gL, &PolyObjects[READUINT16(save_p)], META_POLYOBJ);
+		break;
 	case ARCH_SLOPE:
 		LUA_PushUserdata(gL, P_SlopeById(READUINT16(save_p)), META_SLOPE);
 		break;
-#endif
 	case ARCH_MAPHEADER:
 		LUA_PushUserdata(gL, mapheaderinfo[READUINT16(save_p)], META_MAPHEADER);
+		break;
+	case ARCH_SKINCOLOR:
+		LUA_PushUserdata(gL, &skincolors[READUINT16(save_p)], META_SKINCOLOR);
+		break;
+	case ARCH_MOUSE:
+		LUA_PushUserdata(gL, READUINT16(save_p) == 1 ? &mouse : &mouse2, META_MOUSE);
 		break;
 	case ARCH_TEND:
 		return 1;
@@ -1075,6 +1592,7 @@ static void UnArchiveTables(void)
 {
 	int TABLESINDEX;
 	UINT16 i, n;
+	UINT16 metatableid;
 
 	if (!gL)
 		return;
@@ -1099,6 +1617,19 @@ static void UnArchiveTables(void)
 			else
 				lua_rawset(gL, -3);
 		}
+
+		metatableid = READUINT16(save_p);
+		if (metatableid)
+		{
+			// setmetatable(table, registry.metatables[metatableid])
+			lua_getfield(gL, LUA_REGISTRYINDEX, LREG_METATABLES);
+				lua_rawgeti(gL, -1, metatableid);
+				if (lua_isnil(gL, -1))
+					I_Error("Unknown metatable ID %d\n", metatableid);
+				lua_setmetatable(gL, -3);
+			lua_pop(gL, 1);
+		}
+
 		lua_pop(gL, 1);
 	}
 }
@@ -1139,7 +1670,7 @@ void LUA_Archive(void)
 
 	WRITEUINT32(save_p, UINT32_MAX); // end of mobjs marker, replaces mobjnum.
 
-	LUAh_NetArchiveHook(NetArchive); // call the NetArchive hook in archive mode
+	LUA_HookNetArchive(NetArchive); // call the NetArchive hook in archive mode
 	ArchiveTables();
 
 	if (gL)
@@ -1174,7 +1705,7 @@ void LUA_UnArchive(void)
 		}
 	} while(mobjnum != UINT32_MAX); // repeat until end of mobjs marker.
 
-	LUAh_NetArchiveHook(NetUnArchive); // call the NetArchive hook in unarchive mode
+	LUA_HookNetArchive(NetUnArchive); // call the NetArchive hook in unarchive mode
 	UnArchiveTables();
 
 	if (gL)
@@ -1193,4 +1724,35 @@ int Lua_optoption(lua_State *L, int narg,
 	return -1;
 }
 
-#endif // HAVE_BLUA
+void LUA_PushTaggableObjectArray
+(		lua_State *L,
+		const char *field,
+		lua_CFunction iterator,
+		lua_CFunction indexer,
+		lua_CFunction counter,
+		taggroup_t *garray[],
+		size_t * max_elements,
+		void * element_array,
+		size_t sizeof_element,
+		const char *meta)
+{
+	lua_newuserdata(L, 0);
+		lua_createtable(L, 0, 2);
+			lua_createtable(L, 0, 2);
+				lua_pushcfunction(L, iterator);
+				lua_setfield(L, -2, "iterate");
+
+				LUA_InsertTaggroupIterator(L, garray,
+						max_elements, element_array, sizeof_element, meta);
+
+				lua_createtable(L, 0, 1);
+					lua_pushcfunction(L, indexer);
+					lua_setfield(L, -2, "__index");
+				lua_setmetatable(L, -2);
+			lua_setfield(L, -2, "__index");
+
+			lua_pushcfunction(L, counter);
+			lua_setfield(L, -2, "__len");
+		lua_setmetatable(L, -2);
+	lua_setglobal(L, field);
+}

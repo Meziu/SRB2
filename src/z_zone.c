@@ -1,7 +1,7 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
 // Copyright (C) 2006      by Graue.
-// Copyright (C) 2006-2019 by Sonic Team Junior.
+// Copyright (C) 2006-2023 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -28,6 +28,7 @@
 #include "doomdef.h"
 #include "doomstat.h"
 #include "r_patch.h"
+#include "r_picformats.h"
 #include "i_system.h" // I_GetFreeMem
 #include "i_video.h" // rendermode
 #include "z_zone.h"
@@ -115,10 +116,10 @@ void Z_Init(void)
 	CONS_Printf("System memory: %uMB - Free: %uMB\n", total>>20, memfree);
 
 	// Note: This allocates memory. Watch out.
-	COM_AddCommand("memfree", Command_Memfree_f);
+	COM_AddCommand("memfree", Command_Memfree_f, COM_LUA);
 
 #ifdef ZDEBUG
-	COM_AddCommand("memdump", Command_Memdump_f);
+	COM_AddCommand("memdump", Command_Memdump_f, COM_LUA);
 #endif
 }
 
@@ -217,11 +218,9 @@ void Z_Free(void *ptr)
 	CONS_Debug(DBG_MEMORY, "Z_Free at %s:%d\n", file, line);
 #endif
 
-#ifdef HAVE_BLUA
 	// anything that isn't by lua gets passed to lua just in case.
 	if (block->tag != PU_LUA)
 		LUA_InvalidateUserdata(ptr);
-#endif
 
 	// TODO: if zdebugging, make sure no other block has a user
 	// that is about to be freed.
@@ -232,12 +231,12 @@ void Z_Free(void *ptr)
 
 	// Free the memory and get rid of the block.
 	free(block->real);
-	block->prev->next = block->next;
-	block->next->prev = block->prev;
-	free(block);
 #ifdef VALGRIND_DESTROY_MEMPOOL
 	VALGRIND_DESTROY_MEMPOOL(block);
 #endif
+	block->prev->next = block->next;
+	block->next->prev = block->prev;
+	free(block);
 }
 
 /** malloc() that doesn't accept failure.
@@ -317,12 +316,8 @@ void *Z_MallocAlign(size_t size, INT32 tag, void *user, INT32 alignbits)
 	// The mem header lives 'sizeof (memhdr_t)' bytes before given.
 	hdr = (memhdr_t *)((UINT8 *)given - sizeof *hdr);
 
-#ifdef VALGRIND_CREATE_MEMPOOL
-	VALGRIND_CREATE_MEMPOOL(block, padsize, Z_calloc);
+#ifdef HAVE_VALGRIND
 	Z_calloc = false;
-#endif
-#ifdef VALGRIND_MEMPOOL_ALLOC
-	VALGRIND_MEMPOOL_ALLOC(block, hdr, size + sizeof *hdr);
 #endif
 
 	block->next = head.next;
@@ -340,6 +335,13 @@ void *Z_MallocAlign(size_t size, INT32 tag, void *user, INT32 alignbits)
 #endif
 	block->size = blocksize;
 	block->realsize = size;
+
+#ifdef VALGRIND_CREATE_MEMPOOL
+	VALGRIND_CREATE_MEMPOOL(block, padsize, Z_calloc);
+#endif
+//#ifdef VALGRIND_MEMPOOL_ALLOC
+//	VALGRIND_MEMPOOL_ALLOC(block, hdr, size + sizeof *hdr);
+//#endif
 
 	hdr->id = ZONEID;
 	hdr->block = block;
@@ -494,38 +496,36 @@ void Z_FreeTags(INT32 lowtag, INT32 hightag)
 	}
 }
 
+/** Iterates through all memory for a given set of tags.
+  *
+  * \param lowtag The lowest tag to consider.
+  * \param hightag The highest tag to consider.
+  * \param iterfunc The iterator function.
+  */
+void Z_IterateTags(INT32 lowtag, INT32 hightag, boolean (*iterfunc)(void *))
+{
+	memblock_t *block, *next;
+
+	if (!iterfunc)
+		I_Error("Z_IterateTags: no iterator function was given");
+
+	for (block = head.next; block != &head; block = next)
+	{
+		next = block->next; // get link before possibly freeing
+
+		if (block->tag >= lowtag && block->tag <= hightag)
+		{
+			void *mem = (UINT8 *)block->hdr + sizeof *block->hdr;
+			boolean free = iterfunc(mem);
+			if (free)
+				Z_Free(mem);
+		}
+	}
+}
+
 // -----------------
 // Utility functions
 // -----------------
-
-// for renderer switching, free a bunch of stuff
-boolean needpatchflush = false;
-boolean needpatchrecache = false;
-
-// flush all patches from memory
-// (also frees memory tagged with PU_CACHE)
-// (which are not necessarily patches but I don't care)
-void Z_FlushCachedPatches(void)
-{
-	CONS_Debug(DBG_RENDER, "Z_FlushCachedPatches()...\n");
-	Z_FreeTag(PU_CACHE);
-	Z_FreeTag(PU_PATCH);
-	Z_FreeTag(PU_HUDGFX);
-	Z_FreeTag(PU_HWRPATCHINFO);
-	Z_FreeTag(PU_HWRMODELTEXTURE);
-	Z_FreeTag(PU_HWRCACHE);
-	Z_FreeTag(PU_HWRCACHE_UNLOCKED);
-	Z_FreeTag(PU_HWRPATCHINFO_UNLOCKED);
-}
-
-// happens before a renderer switch
-void Z_PreparePatchFlush(void)
-{
-	CONS_Debug(DBG_RENDER, "Z_PreparePatchFlush()...\n");
-#ifdef ROTSPRITE
-	R_FreeAllRotSprite();
-#endif
-}
 
 // starting value of nextcleanup
 #define CLEANUPCOUNT 2000
@@ -795,24 +795,30 @@ static void Command_Memfree_f(void)
 
 	Z_CheckHeap(-1);
 	CONS_Printf("\x82%s", M_GetText("Memory Info\n"));
-	CONS_Printf(M_GetText("Total heap used   : %7s KB\n"), sizeu1(Z_TotalUsage()>>10));
-	CONS_Printf(M_GetText("Static            : %7s KB\n"), sizeu1(Z_TagUsage(PU_STATIC)>>10));
-	CONS_Printf(M_GetText("Static (sound)    : %7s KB\n"), sizeu1(Z_TagUsage(PU_SOUND)>>10));
-	CONS_Printf(M_GetText("Static (music)    : %7s KB\n"), sizeu1(Z_TagUsage(PU_MUSIC)>>10));
-	CONS_Printf(M_GetText("Locked cache      : %7s KB\n"), sizeu1(Z_TagUsage(PU_CACHE)>>10));
-	CONS_Printf(M_GetText("Level             : %7s KB\n"), sizeu1(Z_TagUsage(PU_LEVEL)>>10));
-	CONS_Printf(M_GetText("Special thinker   : %7s KB\n"), sizeu1(Z_TagUsage(PU_LEVSPEC)>>10));
-	CONS_Printf(M_GetText("All purgable      : %7s KB\n"),
+	CONS_Printf(M_GetText("Total heap used        : %7s KB\n"), sizeu1(Z_TotalUsage()>>10));
+	CONS_Printf(M_GetText("Static                 : %7s KB\n"), sizeu1(Z_TagUsage(PU_STATIC)>>10));
+	CONS_Printf(M_GetText("Static (sound)         : %7s KB\n"), sizeu1(Z_TagUsage(PU_SOUND)>>10));
+	CONS_Printf(M_GetText("Static (music)         : %7s KB\n"), sizeu1(Z_TagUsage(PU_MUSIC)>>10));
+	CONS_Printf(M_GetText("Patches                : %7s KB\n"), sizeu1(Z_TagUsage(PU_PATCH)>>10));
+	CONS_Printf(M_GetText("Patches (low priority) : %7s KB\n"), sizeu1(Z_TagUsage(PU_PATCH_LOWPRIORITY)>>10));
+	CONS_Printf(M_GetText("Patches (rotated)      : %7s KB\n"), sizeu1(Z_TagUsage(PU_PATCH_ROTATED)>>10));
+	CONS_Printf(M_GetText("Sprites                : %7s KB\n"), sizeu1(Z_TagUsage(PU_SPRITE)>>10));
+	CONS_Printf(M_GetText("HUD graphics           : %7s KB\n"), sizeu1(Z_TagUsage(PU_HUDGFX)>>10));
+	CONS_Printf(M_GetText("Locked cache           : %7s KB\n"), sizeu1(Z_TagUsage(PU_CACHE)>>10));
+	CONS_Printf(M_GetText("Level                  : %7s KB\n"), sizeu1(Z_TagUsage(PU_LEVEL)>>10));
+	CONS_Printf(M_GetText("Special thinker        : %7s KB\n"), sizeu1(Z_TagUsage(PU_LEVSPEC)>>10));
+	CONS_Printf(M_GetText("All purgable           : %7s KB\n"),
 		sizeu1(Z_TagsUsage(PU_PURGELEVEL, INT32_MAX)>>10));
 
 #ifdef HWRENDER
-	if (rendermode != render_soft && rendermode != render_none)
+	if (rendermode == render_opengl)
 	{
-		CONS_Printf(M_GetText("Patch info headers: %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRPATCHINFO)>>10));
-		CONS_Printf(M_GetText("Mipmap patches    : %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRPATCHCOLMIPMAP)>>10));
-		CONS_Printf(M_GetText("HW Texture cache  : %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRCACHE)>>10));
-		CONS_Printf(M_GetText("Plane polygons    : %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRPLANE)>>10));
-		CONS_Printf(M_GetText("HW Texture used   : %7d KB\n"), HWR_GetTextureUsed()>>10);
+		CONS_Printf(M_GetText("Patch info headers     : %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRPATCHINFO)>>10));
+		CONS_Printf(M_GetText("Cached textures        : %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRCACHE)>>10));
+		CONS_Printf(M_GetText("Texture colormaps      : %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRPATCHCOLMIPMAP)>>10));
+		CONS_Printf(M_GetText("Model textures         : %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRMODELTEXTURE)>>10));
+		CONS_Printf(M_GetText("Plane polygons         : %7s KB\n"), sizeu1(Z_TagUsage(PU_HWRPLANE)>>10));
+		CONS_Printf(M_GetText("All GPU textures       : %7d KB\n"), HWR_GetTextureUsed()>>10);
 	}
 #endif
 

@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2019 by Sonic Team Junior.
+// Copyright (C) 1999-2023 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -48,6 +48,12 @@ typedef enum
 	SF_FASTEDGE         = 1<<12, // Faster edge teeter?
 	SF_MULTIABILITY     = 1<<13, // Revenge of Final Demo.
 	SF_NONIGHTSROTATION = 1<<14, // Disable sprite rotation for NiGHTS
+	SF_NONIGHTSSUPER    = 1<<15, // Disable super colors for NiGHTS (if you have SF_SUPER)
+	SF_NOSUPERSPRITES   = 1<<16, // Don't use super sprites while super
+	SF_NOSUPERJUMPBOOST = 1<<17, // Disable the jump boost given while super (i.e. Knuckles)
+	SF_CANBUSTWALLS     = 1<<18, // Can naturally bust walls on contact? (i.e. Knuckles)
+	SF_NOSHIELDABILITY  = 1<<19, // Disable shield abilities
+
 	// free up to and including 1<<31
 } skinflags_t;
 
@@ -112,7 +118,7 @@ typedef enum
 
 	// True if button down last tic.
 	PF_ATTACKDOWN = 1<<7,
-	PF_USEDOWN    = 1<<8,
+	PF_SPINDOWN   = 1<<8,
 	PF_JUMPDOWN   = 1<<9,
 	PF_WPNDOWN    = 1<<10,
 
@@ -238,7 +244,9 @@ typedef enum
 	CR_MACESPIN,
 	CR_MINECART,
 	CR_ROLLOUT,
-	CR_PTERABYTE
+	CR_PTERABYTE,
+	CR_DUSTDEVIL,
+	CR_FAN
 } carrytype_t; // pw_carry
 
 // Player powers. (don't edit this comment)
@@ -279,6 +287,12 @@ typedef enum
 
 	pw_nocontrol, //for linedef exec 427
 
+	pw_dye, // for dyes
+
+	pw_justlaunched, // Launched off a slope this tic (0=none, 1=standard launch, 2=half-pipe launch)
+
+	pw_ignorelatch, // Don't grab onto CR_GENERIC, add 32768 (powers[pw_ignorelatch] & 1<<15) to avoid ALL not-NiGHTS CR_ types
+
 	NUMPOWERS
 } powertype_t;
 
@@ -300,9 +314,43 @@ typedef enum
 	RW_RAIL    = 32
 } ringweapons_t;
 
+//Bot types
+typedef enum
+{
+	BOT_NONE = 0,
+	BOT_2PAI,
+	BOT_2PHUMAN,
+	BOT_MPAI
+} bottype_t;
+
+//AI states
+typedef enum
+{
+	AI_STANDBY = 0,
+	AI_FOLLOW,
+	AI_CATCHUP,
+	AI_THINKFLY,
+	AI_FLYSTANDBY,
+	AI_FLYCARRY,
+	AI_SPINFOLLOW
+} aistatetype_t;
+
+
 // ========================================================================
 //                          PLAYER STRUCTURE
 // ========================================================================
+
+//Bot memory struct
+typedef struct botmem_s
+{
+	boolean lastForward;
+	boolean lastBlocked;
+	boolean blocked;
+	UINT8 catchup_tics;
+	UINT8 thinkstate;
+} botmem_t;
+
+//Main struct
 typedef struct player_s
 {
 	mobj_t *mo;
@@ -324,12 +372,19 @@ typedef struct player_s
 	// bounded/scaled total momentum.
 	fixed_t bob;
 
+	angle_t viewrollangle;
+
+	INT16 angleturn;
+	INT16 oldrelangleturn;
+
 	// Mouse aiming, where the guy is looking at!
 	// It is updated with cmd->aiming.
 	angle_t aiming;
 
 	// fun thing for player sprite
 	angle_t drawangle;
+	angle_t old_drawangle;
+	angle_t old_drawangle2;
 
 	// player's ring count
 	INT16 rings;
@@ -358,7 +413,7 @@ typedef struct player_s
 	UINT16 flashpal;
 
 	// Player skin colorshift, 0-15 for which color to draw player.
-	UINT8 skincolor;
+	UINT16 skincolor;
 
 	INT32 skin;
 	UINT32 availabilities;
@@ -507,9 +562,15 @@ typedef struct player_s
 
 	boolean spectator;
 	boolean outofcoop;
+	boolean removing;
 	UINT8 bot;
+	struct player_s *botleader;
+	UINT16 lastbuttons;
+	botmem_t botmem;
+	boolean blocked;
 
 	tic_t jointime; // Timer when player joins game to change skin/color
+	tic_t quittime; // Time elapsed since user disconnected, zero if connected
 #ifdef HWRENDER
 	fixed_t fovadd; // adjust FOV for hw rendering
 #endif

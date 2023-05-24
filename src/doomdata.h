@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2019 by Sonic Team Junior.
+// Copyright (C) 1999-2023 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -22,6 +22,9 @@
 
 // Some global defines, that configure the game.
 #include "doomdef.h"
+
+#include "taglist.h"
+#include "m_fixed.h" // See the mapthing_t scale.
 
 //
 // Map level types.
@@ -120,15 +123,15 @@ typedef struct
 // lower texture unpegged
 #define ML_DONTPEGBOTTOM       16
 
-#define ML_EFFECT1             32
+#define ML_SKEWTD              32
 
 // Don't let Knuckles climb on this line
 #define ML_NOCLIMB             64
 
-#define ML_EFFECT2             128
-#define ML_EFFECT3             256
-#define ML_EFFECT4             512
-#define ML_EFFECT5            1024
+#define ML_NOSKEW             128
+#define ML_MIDPEG             256
+#define ML_MIDSOLID           512
+#define ML_WRAPMIDTEX        1024
 
 #define ML_NETONLY           2048 // Apply effect only in netgames
 #define ML_NONET             4096 // Apply  effect only in single player games
@@ -193,24 +196,27 @@ typedef struct
 #pragma pack()
 #endif
 
+#define NUMMAPTHINGARGS 10
+#define NUMMAPTHINGSTRINGARGS 2
+
 // Thing definition, position, orientation and type,
 // plus visibility flags and attributes.
 typedef struct
 {
 	INT16 x, y;
-	INT16 angle;
+	INT16 angle, pitch, roll;
 	UINT16 type;
 	UINT16 options;
 	INT16 z;
 	UINT8 extrainfo;
+	taglist_t tags;
+	fixed_t scale;
+	INT32 args[NUMMAPTHINGARGS];
+	char *stringargs[NUMMAPTHINGSTRINGARGS];
 	struct mobj_s *mobj;
 } mapthing_t;
 
 #define ZSHIFT 4
-
-extern const UINT8 Color_Index[MAXTRANSLATIONS-1][16];
-extern const char *Color_Names[MAXSKINCOLORS + NUMSUPERCOLORS];
-extern const UINT8 Color_Opposite[MAXSKINCOLORS - 1][2];
 
 #define NUMMAPS 1035
 

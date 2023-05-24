@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2019 by Sonic Team Junior.
+// Copyright (C) 1999-2023 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -18,6 +18,7 @@
 
 #include "doomdef.h"
 #include "g_game.h"
+#include "i_time.h"
 #include "i_net.h"
 #include "i_system.h"
 #include "m_argv.h"
@@ -614,7 +615,10 @@ void Net_WaitAllAckReceived(UINT32 timeout)
 	while (timeout > I_GetTime() && !Net_AllAcksReceived())
 	{
 		while (tictac == I_GetTime())
-			I_Sleep();
+		{
+			I_Sleep(cv_sleep.value);
+			I_UpdateTime(cv_timescale.value);
+		}
 		tictac = I_GetTime();
 		HGetPacket();
 		Net_AckTicker();
@@ -715,6 +719,8 @@ void Net_CloseConnection(INT32 node)
 
 	InitNode(&nodes[node]);
 	SV_AbortSendFiles(node);
+	if (server)
+		SV_AbortLuaFileTransfer(node);
 	I_NetFreeNodenum(node);
 #endif
 }
@@ -796,15 +802,25 @@ static const char *packettypename[NUMPACKETTYPE] =
 	"REQUESTFILE",
 	"ASKINFOVIAMS",
 
-	"RESYNCHEND",
-	"RESYNCHGET",
+	"WILLRESENDGAMESTATE",
+	"CANRECEIVEGAMESTATE",
+	"RECEIVEDGAMESTATE",
+
+	"SENDINGLUAFILE",
+	"ASKLUAFILE",
+	"HASLUAFILE",
 
 	"FILEFRAGMENT",
+	"FILEACK",
+	"FILERECEIVED",
+
 	"TEXTCMD",
 	"TEXTCMD2",
 	"CLIENTJOIN",
 	"NODETIMEOUT",
-	"RESYNCHING",
+	"LOGIN",
+	"TELLFILESNEEDED",
+	"MOREFILESNEEDED",
 	"PING"
 };
 
@@ -831,7 +847,7 @@ static void DebugPrintpacket(const char *header)
 			size_t ntxtcmd = &((UINT8 *)netbuffer)[doomcom->datalength] - cmd;
 
 			fprintf(debugfile, "    firsttic %u ply %d tics %d ntxtcmd %s\n    ",
-				(UINT32)ExpandTics(serverpak->starttic), serverpak->numslots, serverpak->numtics, sizeu1(ntxtcmd));
+				(UINT32)serverpak->starttic, serverpak->numslots, serverpak->numtics, sizeu1(ntxtcmd));
 			/// \todo Display more readable information about net commands
 			fprintfstringnewline((char *)cmd, ntxtcmd);
 			/*fprintfstring((char *)cmd, 3);
@@ -850,8 +866,8 @@ static void DebugPrintpacket(const char *header)
 		case PT_NODEKEEPALIVE:
 		case PT_NODEKEEPALIVEMIS:
 			fprintf(debugfile, "    tic %4u resendfrom %u\n",
-				(UINT32)ExpandTics(netbuffer->u.clientpak.client_tic),
-				(UINT32)ExpandTics (netbuffer->u.clientpak.resendfrom));
+				(UINT32)ExpandTics(netbuffer->u.clientpak.client_tic, doomcom->remotenode),
+				(UINT32)ExpandTics (netbuffer->u.clientpak.resendfrom, doomcom->remotenode));
 			break;
 		case PT_TEXTCMD:
 		case PT_TEXTCMD2:
@@ -1132,8 +1148,9 @@ boolean HGetPacket(void)
 		if (netbuffer->checksum != NetbufferChecksum())
 		{
 			DEBFILE("Bad packet checksum\n");
-			//Net_CloseConnection(nodejustjoined ? (doomcom->remotenode | FORCECLOSE) : doomcom->remotenode);
-			Net_CloseConnection(doomcom->remotenode);
+			// Do not disconnect or anything, just ignore the packet.
+			// Bad checksums with UDP tend to happen very scarcely
+			// so they are not normally an issue.
 			continue;
 		}
 
