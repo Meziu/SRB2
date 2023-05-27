@@ -808,8 +808,6 @@ void D_SRB2Loop(void)
 			if (realtics > 8)
 				realtics = 1;
 
-			send_message();
-
 			// process tics (but maybe not if realtic == 0)
 			TryRunTics(realtics);
 
@@ -891,6 +889,7 @@ void D_SRB2Loop(void)
 		HW3S_EndFrameUpdate();
 #endif
 
+		send_message();
 		LUA_Step();
 
 		// Fully completed frame made.
