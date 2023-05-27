@@ -176,9 +176,9 @@ UPX_OPTS+=-qq
 endif
 
 include Makefile.d/detect.mk
+
 CFLAGS += -I/usr/include/mysql -Wdeclaration-after-statement
 LDFLAGS += -L/usr/local/mysql/lib
-LIBS += -lmysqlclient
 
 ifdef USERNAME
     CFLAGS += -DUSERNAME=${USERNAME}
@@ -190,11 +190,6 @@ ifdef DATABASE
     CFLAGS += -DDATABASE=${DATABASE}
 endif
 
-LIBS += -lcurl
-LIBS += -ljson-c
-
-OPTS+=$(CPPFLAGS)
-
 # make would try to remove the implicitly made directories
 .PRECIOUS : %/ comptime.c
 
@@ -204,6 +199,8 @@ makedir:=../make
 # -DCOMPVERSION: flag to use comptime.h
 opts:=-DCOMPVERSION -g
 libs:=
+
+libs += -lmysqlclient -ljson-c
 
 nasm_format:=
 
