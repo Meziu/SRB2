@@ -1110,11 +1110,7 @@ boolean HU_Responder(event_t *ev)
 		 || ev->key == KEY_LALT || ev->key == KEY_RALT)
 			return true;
 
-<<<<<<< HEAD
-		c = (INT32)ev->keycode;
-=======
 		c = (INT32)ev->key;
->>>>>>> eb1492fe6e501001a2271fa133bd76c0b0612715
 
 		// I know this looks very messy but this works. If it ain't broke, don't fix it!
 		// shift LETTERS to uppercase if we have capslock or are holding shift
