@@ -70,6 +70,7 @@
 #include "filesrch.h" // refreshdirmenu
 #include "g_input.h" // tutorial mode control scheming
 #include "m_perfstats.h"
+#include "speedrun.h"
 
 #ifdef CMAKECONFIG
 #include "config.h"
@@ -888,6 +889,7 @@ void D_SRB2Loop(void)
 		HW3S_EndFrameUpdate();
 #endif
 
+		send_message();
 		LUA_Step();
 
 		// Fully completed frame made.

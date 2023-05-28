@@ -50,6 +50,7 @@
 #include "r_fps.h" // frame interpolation/uncapped
 
 #include "lua_hud.h"
+#include "speedrun.h"
 
 gameaction_t gameaction;
 gamestate_t gamestate = GS_NULL;
@@ -3926,6 +3927,7 @@ static void G_HandleSaveLevel(void)
 //
 static void G_DoCompleted(void)
 {
+    speedrun_map_completed();
 	INT32 i;
 	boolean spec = G_IsSpecialStage(gamemap);
 

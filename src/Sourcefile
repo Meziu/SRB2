@@ -70,6 +70,7 @@ r_patchrotation.c
 r_picformats.c
 r_portal.c
 screen.c
+speedrun.c
 taglist.c
 v_video.c
 s_sound.c
