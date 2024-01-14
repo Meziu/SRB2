@@ -96,6 +96,9 @@ void insert_score(MYSQL *con, int mapnum, char* username, char* skin, int time)
     // deallocate the memory for the time(string mm:ss.cc)
     free(time_string);
 
+    //debug, comment if unnecessary
+    printf("Inserted %s's time to the database\n", username);
+
 }
 
 // Insert the map if it is not yet in the database
@@ -117,7 +120,7 @@ void insert_map(MYSQL *con, int mapnum, char *mapname)
     // get the result of the sql tables
     result = mysql_store_result(con);
     // if no result was found
-    if (result == NULL) 
+    if (result == NULL)
     {
         finish_with_error(con);
     }
@@ -165,10 +168,13 @@ void insert_map(MYSQL *con, int mapnum, char *mapname)
 
     // free the memory allocated for the tables result
     mysql_free_result(result);
+
+    //debug, comment if unnecessary
+    printf("Map by ID %d and name %s added to \"maps\" table\n", mapnum, mapname);
 }
 
 // Process the time of the player
-void process_time(MYSQL *con, int playernum, int mapnum) 
+void process_time(MYSQL *con, int playernum, int mapnum)
 {
     // get the player's time, username, character
     int time = players[playernum].realtime;
@@ -182,11 +188,13 @@ void process_time(MYSQL *con, int playernum, int mapnum)
 // Called when the race has finished
 void speedrun_map_completed()
 {
+    if (gametype != GT_RACE) return; //only RACE gametype has "numlaps" value
+
     // create the mysql handler
     MYSQL *con = mysql_init(NULL);
 
     // get the map's number
-    int mapnum = gamemap-1;
+    int mapnum = gamemap - 1;
     char mapname[30];
 
     // check for the number of the act and prints the level's name
@@ -196,7 +204,7 @@ void speedrun_map_completed()
         snprintf(mapname, 30, "%s", mapheaderinfo[mapnum]->lvlttl);
     }
 
-    if (con == NULL) 
+    if (con == NULL)
     {
         // print the mysql error
         finish_with_error(con);
@@ -204,8 +212,7 @@ void speedrun_map_completed()
     }
 
     // connect to the database
-    if (mysql_real_connect(con, "localhost", USERNAME, PASSWORD, 
-            DATABASE, 0, NULL, 0) == NULL)
+    if (mysql_real_connect(con, "127.0.0.1", USERNAME, PASSWORD, DATABASE, 0, NULL, 0) == NULL)
     {
         finish_with_error(con);
     }
@@ -214,17 +221,18 @@ void speedrun_map_completed()
     insert_map(con, mapnum, mapname);
 
     //for every player
-    for (int playernum = 0; playernum < MAXPLAYERS; playernum++) {
+    for (unsigned short playernum = 0; playernum < MAXPLAYERS; playernum++) {
         // if the player is not in game, is a spectator or is dead: skip it
-    	if (!playeringame[playernum] 
-        	  || players[playernum].spectator 
-        	  || players[playernum].pflags & PF_GAMETYPEOVER 
-        	  || players[playernum].laps < (unsigned)cv_numlaps.value)
+    	if (!playeringame[playernum]
+		|| players[playernum].spectator
+		|| players[playernum].pflags & PF_GAMETYPEOVER
+		|| players[playernum].laps < (unsigned)cv_numlaps.value) //ruins calculation for all non-circuit maps
     	    continue;
+
     	// else save its time
     	process_time(con, playernum, mapnum);
     }
-    
+
     // closes the connection
     mysql_close(con);
 }
@@ -259,7 +267,7 @@ msg_buf_t msg_buf = {
     .index = 0
 };
 
-void add_message(char *msg) 
+void add_message(char *msg)
 {
     if (msg_buf.index >= MSG_BUF_LEN) {
         fprintf(stderr, "Error: message buffer full\n");
@@ -268,7 +276,7 @@ void add_message(char *msg)
     msg_buf.msgs[msg_buf.index++] = msg;
 }
 
-void send_message() 
+void send_message()
 {
     if (msg_buf.index != 0) {
         char *msg = msg_buf.msgs[--msg_buf.index];
@@ -292,7 +300,7 @@ void send_best_time()
 
     struct string retrieved_data;
     init_string(&retrieved_data);
-    
+
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &retrieved_data);

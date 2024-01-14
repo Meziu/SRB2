@@ -10,10 +10,10 @@
 #define MSG_BUF_LEN 20
 
 // define the macros for the statements
-#define GET_MAP "select * from maps where id = %d"
-#define INSERT_MAP "insert into maps (id, name) values (?, ?)"
-#define GET_SCORE "select time from highscores where username = ? and skin = ? and map_id = ?"
-#define INSERT_SCORE "insert into highscores (time, time_string, username, skin, map_id, datetime) values (?, ?, ?, ?, ?, NOW())"
+#define GET_MAP "SELECT * FROM maps WHERE id = %d"
+#define INSERT_MAP "INSERT INTO maps (id, name) VALUES (?, ?)"
+#define GET_SCORE "SELECT time FROM highscores WHERE username = ? AND skin = ? AND map_id = ?"
+#define INSERT_SCORE "INSERT INTO highscores (time, time_string, username, skin, map_id, datetime) VALUES (?, ?, ?, ?, ?, NOW())"
 
 #define BEST_SCORE_ON_MAP_URL "https://srb2circuit.eu/highscores/api/bestformaps?map_id=%d&all_skins=on"
 
@@ -41,4 +41,3 @@ void add_message(char *msg);
 void send_message();
 
 #endif // speedrun_h_INCLUDED
-
