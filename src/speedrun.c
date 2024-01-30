@@ -298,6 +298,7 @@ void send_best_time()
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &retrieved_data);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L);
+    curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_3);
 
     result = curl_easy_perform(curl);
 
