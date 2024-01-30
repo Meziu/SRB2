@@ -298,12 +298,11 @@ void send_best_time()
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &retrieved_data);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L);
-    curl_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_SSLv3); // Force SSLv3 to fix "Unknown SSL Protocol"
 
     result = curl_easy_perform(curl);
 
     if (result != CURLE_OK) {
-        fprintf(stderr, "%s%d\n", "Error while retrieving data from API. Curl error code: ", result);
+        fprintf(stderr, "%s%s\n", "Error while retrieving data from API. Curl error: ", curl_easy_strerror(result));
         return;
     }
 
