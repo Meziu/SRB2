@@ -302,7 +302,7 @@ void send_best_time()
     result = curl_easy_perform(curl);
 
     if (result != CURLE_OK) {
-        fprintf(stderr, "%s%s\n", "Error while retrieving data from API. Curl error: ", curl_easy_strerror(result));
+        fprintf(stderr, "%s%d%s%s\n", "Error while retrieving data from API. Curl error ", result, ": ", curl_easy_strerror(result));
         return;
     }
 
