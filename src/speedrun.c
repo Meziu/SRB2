@@ -298,7 +298,7 @@ void send_best_time()
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &retrieved_data);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L);
-    curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_3);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
     result = curl_easy_perform(curl);
 
@@ -315,7 +315,7 @@ void send_best_time()
     base_array = json_tokener_parse(retrieved_data.ptr);
 
     // check if the map is found, else don't do anything
-    if ((strcmp(retrieved_data.ptr, "[]") != 0) && (result == CURLE_OK))
+    if (strcmp(retrieved_data.ptr, "[]") != 0)
     {
         zero_index = json_object_array_get_idx(base_array, 0);
         json_object_object_get_ex(zero_index, "skins", &skin_scores);
