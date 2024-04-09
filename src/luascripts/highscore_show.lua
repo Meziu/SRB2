@@ -3,11 +3,12 @@ local skin = {}
 local time = {}
 local full_rows = 0
 local used_row = 0
-local no_time = true
+local no_time = 1
 
-local function receive_data(source, type, target, msg)
-	if msg:sub(0, 5) == "UXDFS"
-		local data_msg = msg:sub(6)
+--recieve data
+addHook("PlayerMsg", function(s, type, t, m)
+	if (m:sub(0, 5) == "SCTCL")
+		local data_msg = m:sub(6)
 		
 		full_rows = full_rows + 1
 		
@@ -19,50 +20,47 @@ local function receive_data(source, type, target, msg)
 		time[full_rows] = data_msg:sub(second_comma+1)
 		return true
 	end
-end
-addHook("PlayerMsg", receive_data)
+end)
 
-
-local function reset_on_map_change(mapnum)
+--reset on map Load
+addHook("MapLoad", function(mapnum)
 	username = {}
 	skin = {}
 	time = {}
 	full_rows = 0
 	used_row = 0
-end
-addHook("MapLoad", reset_on_map_change)
+end)
 
 
 local function find_in_array(array, value)
 	for k, v in ipairs(array) do
-		if v == value
+		if (v == value)
 			return k
 		end
 	end
 	return -1
 end
 
-
-local function check_player_skin(player)
-	if player == displayplayer
-		used_row = find_in_array(skin, player.mo.skin)
+--check player skin
+addHook("PlayerThink", function(p)
+	if (p == displayplayer)
+		used_row = find_in_array(skin, p.mo.skin)
 		
 		if used_row == -1
-			no_time = true
+			no_time = 1
 		else
-			no_time = false
+			no_time = 0
 		end
 	end
-end
-addHook("PlayerThink", check_player_skin)
+end)
 
 
 local function show_score(v)
-	if no_time
-		v.drawString(4, 173, "NO BEST TIME YET, BE FIRST TO FINISH!", 45056)
+	if (no_time)
+		v.drawString(4, 188, "\x87No best time found")
 	else
-		v.drawString(4, 173, "BEST TIME FOR " + string.upper(skin[used_row]) + ":", 45056)
-		v.drawString(4, 182, time[used_row]+" by "+username[used_row])
+		v.drawString(4, 188, "\x87BEST TIME FOR \x85"..skin[used_row]:upper().."\x87:")
+		v.drawString(4, 192, "\x84"..time[used_row].."\x87 by \x82"..username[used_row])
 	end
 	
 end

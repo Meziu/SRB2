@@ -6,8 +6,6 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include "credentials.h"
-#include <curl/curl.h>
-#include <json-c/json.h>
 
 // Exits with an error
 void finish_with_error(MYSQL *con)
@@ -21,7 +19,7 @@ void finish_with_error(MYSQL *con)
 char *time_to_string(int time)
 {
     char *time_string = malloc(TIME_STRING_LEN);
-    snprintf(time_string, TIME_STRING_LEN, 
+    snprintf(time_string, TIME_STRING_LEN,
         "%i:%02i.%02i"
         , G_TicsToMinutes(time,true)
         , G_TicsToSeconds(time)
@@ -97,11 +95,12 @@ void insert_score(MYSQL *con, int mapnum, char* username, char* skin, int time)
     free(time_string);
 
     //debug, comment if unnecessary
-    printf("Inserted %s's time to the database\n", username);
+    //printf("Inserted %s's time to the database\n", username);
 
 }
 
 // Insert the map if it is not yet in the database
+/*
 void insert_map(MYSQL *con, int mapnum, char *mapname)
 {
     char query[QUERY_LEN];
@@ -170,8 +169,9 @@ void insert_map(MYSQL *con, int mapnum, char *mapname)
     mysql_free_result(result);
 
     //debug, comment if unnecessary
-    printf("Map by ID %d and name %s added to \"maps\" table\n", mapnum, mapname);
+    //printf("Map by ID %d and name %s added to \"maps\" table\n", mapnum, mapname);
 }
+*/
 
 // Process the time of the player
 void process_time(MYSQL *con, int playernum, int mapnum)
@@ -218,15 +218,12 @@ void speedrun_map_completed()
     }
 
     // inserts the new map if not found
-    insert_map(con, mapnum, mapname);
+    //insert_map(con, mapnum, mapname);
 
     //for every player
-    for (unsigned short playernum = 0; playernum < MAXPLAYERS; playernum++) {
+    for (unsigned char playernum = 0; playernum < MAXPLAYERS; playernum++) {
         // if the player is not in game, is a spectator or is dead: skip it
-    	if (!playeringame[playernum]
-		|| players[playernum].spectator
-		|| players[playernum].pflags & PF_GAMETYPEOVER
-		|| players[playernum].laps < (unsigned)cv_numlaps.value) //ruins calculation for all non-circuit maps
+    	if ((!playeringame[playernum]) || (players[playernum].spectator) || (players[playernum].pflags & PF_GAMETYPEOVER) || (players[playernum].laps < (unsigned)cv_numlaps.value)) //ruins calculation for all non-circuit maps
     	    continue;
 
     	// else save its time
@@ -237,6 +234,7 @@ void speedrun_map_completed()
     mysql_close(con);
 }
 
+/*
 void init_string(struct string *s)
 {
   s->len = 0;
@@ -262,6 +260,7 @@ size_t write_to_string(void *ptr, size_t size, size_t nmemb, struct string *s)
 
   return size*nmemb;
 }
+*/
 
 msg_buf_t msg_buf = {
     .index = 0
@@ -280,77 +279,61 @@ void send_message()
 {
     if (msg_buf.index != 0) {
         char *msg = msg_buf.msgs[--msg_buf.index];
-        SendNetXCmd(XD_SAY, msg, strlen(msg+2) + 3);
+        SendNetXCmd(XD_SAY, msg, strlen(msg + 2) + 3);
         free(msg);
     }
 }
 
+//executes with "MapLoad" lua hook
 void send_best_time()
 {
-    int url_len = strlen(BEST_SCORE_ON_MAP_URL) + 5;
-    char url[url_len];
-    int mapnum = gamemap-1;
-    snprintf(url, url_len, BEST_SCORE_ON_MAP_URL, mapnum);
+    printf("Gamemap: %d\n", gamemap);
 
+    MYSQL *con;
+    MYSQL_RES *res;
+    MYSQL_ROW row;
+    char query[256];
 
-    CURL *curl;
-    int result;
+    con = mysql_init(NULL);
 
-    curl = curl_easy_init();
-
-    struct string retrieved_data;
-    init_string(&retrieved_data);
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &retrieved_data);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-
-    result = curl_easy_perform(curl);
-
-    if (result != CURLE_OK) {
-        fprintf(stderr, "%s\n", "Error while retrieving data from API\n");
-        return;
+    if (con == NULL)
+    {
+        // print the mysql error
+        finish_with_error(con);
+        exit(1);
     }
 
-    curl_easy_cleanup(curl);
-
-
-    struct json_object *base_array, *zero_index, *skin_scores;
-
-    base_array = json_tokener_parse(retrieved_data.ptr);
-
-    // check if the map is found, else don't do anything
-    if ((strcmp(retrieved_data.ptr, "[]") != 0) && (result == CURLE_OK))
+    // connect to the database
+    if (!mysql_real_connect(con, "127.0.0.1", USERNAME, PASSWORD, DATABASE, 0, NULL, 0))
     {
-        zero_index = json_object_array_get_idx(base_array, 0);
-        json_object_object_get_ex(zero_index, "skins", &skin_scores);
-        free(retrieved_data.ptr);
+        finish_with_error(con);
+    }
 
-        for (int i=0; i<json_object_array_length(skin_scores); i+=1)
-        {
-            struct json_object *score, *time, *username, *skin;
-            score = json_object_array_get_idx(skin_scores, i);
+    //send query
+    snprintf(query, 256, "SELECT username, skin, MIN(time_string) FROM highscores WHERE map_id = %d GROUP BY skin", gamemap - 1);
+    if (mysql_query(con, query))
+    {
+       finish_with_error(con);
+    }
 
-            json_object_object_get_ex(score, "username", &username);
-            json_object_object_get_ex(score, "name", &skin);
-            json_object_object_get_ex(score, "time_string", &time);
+    //recieve result
+    res = mysql_use_result(con);
 
-            const char *s_username = json_object_get_string(username);
-            const char *s_skin = json_object_get_string(skin);
-            const char *s_time = json_object_get_string(time);
+    while (row = mysql_fetch_row(res))
+    {
+	//row[0] is username
+	//row[1] is skin
+	//row[2] is time
 
-            
-            char *buf = malloc(MSG_LEN);
-            char *msg = &buf[2];
-            const size_t msgspace = MSG_LEN- 2;
+        char *buf = malloc(MSG_LEN);
+        char *msg = &buf[2];
+        const size_t msgspace = MSG_LEN - 2;
 
-            buf[0] = 0; // send message to everyone
-            buf[1] = 1; // send message as server
+        buf[0] = 0; // send message to everyone
+        buf[1] = 1; // send message as server
 
-            // the UXDFS at the start is just a bunch of random letters I'm using as a tag to find the correct message to get data from
-            snprintf(msg, msgspace, "UXDFS%s,%s,%s", s_username, s_skin, s_time);
-            add_message(buf);
-        }
+        // sending the data via "Server C To Client Lua" channel
+        snprintf(msg, msgspace, "SCTCL%s,%s,%s", row[0], row[1], row[2]);
+        add_message(buf);
     }
 }

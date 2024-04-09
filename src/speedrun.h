@@ -10,12 +10,12 @@
 #define MSG_BUF_LEN 20
 
 // define the macros for the statements
-#define GET_MAP "SELECT * FROM maps WHERE id = %d"
-#define INSERT_MAP "INSERT INTO maps (id, name) VALUES (?, ?)"
+//#define GET_MAP "SELECT * FROM maps WHERE id = %d"
+//#define INSERT_MAP "INSERT INTO maps (id, name) VALUES (?, ?)"
 #define GET_SCORE "SELECT time FROM highscores WHERE username = ? AND skin = ? AND map_id = ?"
 #define INSERT_SCORE "INSERT INTO highscores (time, time_string, username, skin, map_id, datetime) VALUES (?, ?, ?, ?, ?, NOW())"
 
-#define BEST_SCORE_ON_MAP_URL "https://srb2circuit.eu/highscores/api/bestformaps?map_id=%d&all_skins=on"
+//#define BEST_SCORE_ON_MAP_URL "https://srb2circuit.eu/highscores/api/bestformaps?map_id=%d&all_skins=on"
 
 struct string {
   char *ptr;
@@ -32,7 +32,7 @@ void send_best_time();
 void finish_with_error(MYSQL *con);
 char *time_to_string(int time);
 void insert_score(MYSQL *con, int mapnum, char* username, char* skin, int time);
-void insert_map(MYSQL *con, int mapnum, char *mapname);
+//void insert_map(MYSQL *con, int mapnum, char *mapname);
 void process_time(MYSQL *con, int playernum, int mapnum);
 void speedrun_map_completed();
 void init_string(struct string *s);
