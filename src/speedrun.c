@@ -196,7 +196,7 @@ void speedrun_map_completed()
         snprintf(mapname, 30, "%s", mapheaderinfo[mapnum]->lvlttl);
     }
 
-    if (con == NULL) 
+    if (con == NULL)
     {
         // print the mysql error
         finish_with_error(con);
@@ -224,7 +224,7 @@ void speedrun_map_completed()
     	// else save its time
     	process_time(con, playernum, mapnum);
     }
-    
+
     // closes the connection
     mysql_close(con);
 }
@@ -268,7 +268,7 @@ void add_message(char *msg)
     msg_buf.msgs[msg_buf.index++] = msg;
 }
 
-void send_message() 
+void send_message()
 {
     if (msg_buf.index != 0) {
         char *msg = msg_buf.msgs[--msg_buf.index];
@@ -277,13 +277,20 @@ void send_message()
     }
 }
 
+//
+// The "SCTCL" sender
+// ("Server C To Client Lua")
+//
 void send_best_time()
 {
+    //I believe that the server should rely on the localhost MySQL databse instead of
+    //the external web server. This way it requires less dependencies here and make
+    //this server be fully autonomous in case of web server malfunction
+
     int url_len = strlen(BEST_SCORE_ON_MAP_URL) + 5;
     char url[url_len];
     int mapnum = gamemap-1;
     snprintf(url, url_len, BEST_SCORE_ON_MAP_URL, mapnum);
-
 
     CURL *curl;
     int result;
@@ -292,7 +299,7 @@ void send_best_time()
 
     struct string retrieved_data;
     init_string(&retrieved_data);
-    
+
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &retrieved_data);
@@ -321,20 +328,21 @@ void send_best_time()
         json_object_object_get_ex(zero_index, "skins", &skin_scores);
         free(retrieved_data.ptr);
 
-        for (int i=0; i<json_object_array_length(skin_scores); i+=1)
+        for (int i=0; i<json_object_array_length(skin_scores); i++)
         {
-            struct json_object *score, *time, *username, *skin;
+            struct json_object *score, *time, *time_str, *username, *skin;
             score = json_object_array_get_idx(skin_scores, i);
 
             json_object_object_get_ex(score, "username", &username);
             json_object_object_get_ex(score, "name", &skin);
-            json_object_object_get_ex(score, "time_string", &time);
+            json_object_object_get_ex(score, "time", &time);
+            json_object_object_get_ex(score, "time_string", &time_str);
 
             const char *s_username = json_object_get_string(username);
             const char *s_skin = json_object_get_string(skin);
             const char *s_time = json_object_get_string(time);
+            const char *s_time_str = json_object_get_string(time_str);
 
-            
             char *buf = malloc(MSG_LEN);
             char *msg = &buf[2];
             const size_t msgspace = MSG_LEN- 2;
@@ -342,8 +350,8 @@ void send_best_time()
             buf[0] = 0; // send message to everyone
             buf[1] = 1; // send message as server
 
-            // the UXDFS at the start is just a bunch of random letters I'm using as a tag to find the correct message to get data from
-            snprintf(msg, msgspace, "UXDFS%s,%s,%s", s_username, s_skin, s_time);
+            // the message prefixed as "#SCTCL" lets clients know that they are recieving the data from the Server
+            snprintf(msg, msgspace, "#SCTCL%s,%s,%s,%s", s_username, s_skin, s_time, s_time_str);
             add_message(buf);
         }
     }
