@@ -7942,8 +7942,8 @@ boolean P_LoadLevel(boolean fromnetsave, boolean reloadinggamestate)
 
 		P_MapStart(); // just in case MapLoad modifies tmthing
 
-		send_best_time();
 		LUA_HookInt(gamemap, HOOK(MapLoad));
+		send_best_time();
 		
 		P_MapEnd(); // just in case MapLoad modifies tmthing
 	}

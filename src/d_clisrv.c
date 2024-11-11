@@ -48,6 +48,8 @@
 #include "md5.h"
 #include "m_perfstats.h"
 
+#include "speedrun.h"
+
 // aaaaaa
 #include "i_joy.h"
 
@@ -3863,6 +3865,7 @@ static void Got_AddPlayer(UINT8 **p, INT32 playernum)
 		}
 
 		HU_AddChatText(joinmsg, false);
+		send_best_time();
 	}
 
 	if (server && multiplayer && motd[0] != '\0')
